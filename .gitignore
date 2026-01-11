@@ -1,10 +1,12 @@
 *.DS_Store
 
+last_checkpoint
+
 # Log files
 *.out
 *.err
 *.log
-*.json
+# *.json
 
 # Model files
 *.pth
@@ -128,13 +130,13 @@ ENV/
 runs/
 data/
 *.tfrecord
-*.png
+# *.png
 *.pdf
 *.pkl
 *.obj
 *bohb_output
 logs/
-run_*/
+# run_*/
 final_eval*/
 
 # Swap
