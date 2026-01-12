@@ -6,6 +6,7 @@ from scipy.stats import norm
 import sys
 import types
 import copy
+import argparse
 
 from naslib import utils 
 from naslib.utils import get_dataset_api, create_exp_dir
@@ -21,6 +22,11 @@ from naslib.predictors.llm_enhanced_301 import LLM_NB301_Predictor
 
 from naslib.optimizers.discrete.bananas import optimizer as bananas_opt
 from naslib.optimizers.discrete.bananas import acquisition_functions as acq_funcs
+
+# --- PARSE ARGUMENTS ---
+parser = argparse.ArgumentParser(description='Run NASBench301 comparison experiments')
+parser.add_argument('--seed', type=int, default=242, help='Random seed for reproducibility')
+args = parser.parse_args()
 
 class CustomXGBoost(XGBoost):
     def __init__(self, **kwargs):
@@ -60,22 +66,25 @@ config.dataset = "cifar10"
 config.search_space = "nasbench301" 
 config.out_dir = "/home/hice1/psomu3/scratch/codenas/NASLib/results_nb301" # New output dir
 config.optimizer = "" 
-config.search.seed = 147
+config.search.seed = args.seed
 config.save_arch_weights = False
 config.search.num_init = 20
-config.search.k = 20
+config.search.k = 5
 config.search.epochs = 25*config.search.k + config.search.num_init
-config.search.num_candidates = 200
+config.search.num_candidates = 500
 config.out_dir = "run_nb301"
 config.debug_predictor = True
 config.search.num_ensemble = 3
-config.search.num_arches_to_mutate = 5
+config.search.num_arches_to_mutate = 10
 config.search.max_mutations = 1
 config.search.checkpoint_freq = 10000
 
-RUN_BASELINES = False
+RUN_BASELINES = True
+RUN_ALL = True
 
-if RUN_BASELINES:
+if RUN_ALL:
+    print("Running Both Baselines and LLM method.")
+elif RUN_BASELINES:
     print("Running Baselines only.")
 else:
     print("Running LLM method only.")
@@ -197,7 +206,7 @@ def run_experiment(optimizer_name, predictor_cls=None, predictor_kwargs=None):
 # --- EXPERIMENTS ---
 
 # 1. The "True" Baseline (No Predictor)
-if RUN_BASELINES:
+if RUN_BASELINES or RUN_ALL:
     run_experiment("rea")
 
 # 2. The "Competitor" (Bananas with Default Encoding)
@@ -214,7 +223,7 @@ if RUN_BASELINES:
 #     }
 # )
 # 2c. The "Competitor" (Bananas with XGBoost Predictor)
-if RUN_BASELINES:
+if RUN_BASELINES or RUN_ALL:
     run_experiment(
         "bananas",
         predictor_cls=CustomXGBoost,
@@ -253,7 +262,7 @@ if RUN_BASELINES:
 #     }
 # )
 # 3c. "Ours" (Bananas with Online CodeLlama Embedding + XGBoost Predictor)
-if not RUN_BASELINES:
+if not RUN_BASELINES or RUN_ALL:
     run_experiment(
         "bananas",
         predictor_cls=LLM_NB301_Predictor,
@@ -265,6 +274,6 @@ if not RUN_BASELINES:
             "device": "cuda",
             "tree_method": "hist",
             "use_pca": True,        # seed 142+
-            "pca_components": 64
+            "pca_components": 128
         }
     )
