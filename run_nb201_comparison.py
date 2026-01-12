@@ -6,6 +6,7 @@ from scipy.stats import norm
 import sys
 import types
 import copy
+import argparse
 
 from naslib import utils 
 from naslib.utils import get_dataset_api, create_exp_dir
@@ -21,6 +22,11 @@ from naslib.predictors.llm_enhanced_201 import LLM_NB201_Predictor
 
 from naslib.optimizers.discrete.bananas import optimizer as bananas_opt
 from naslib.optimizers.discrete.bananas import acquisition_functions as acq_funcs
+
+# --- PARSE ARGUMENTS ---
+parser = argparse.ArgumentParser(description='Run NASBench201 comparison experiments')
+parser.add_argument('--seed', type=int, default=242, help='Random seed for reproducibility')
+args = parser.parse_args()
 
 class CustomXGBoost(XGBoost):
     def __init__(self, **kwargs):
@@ -60,7 +66,7 @@ config.dataset = "cifar100"
 config.search_space = "nasbench201" 
 config.out_dir = "/home/hice1/psomu3/scratch/codenas/NASLib/results_nb201" # New output dir
 config.optimizer = "" 
-config.search.seed = 151
+config.search.seed = args.seed
 config.save_arch_weights = False
 config.search.num_init = 20
 config.search.k = 5
@@ -74,8 +80,11 @@ config.search.max_mutations = 1
 config.search.checkpoint_freq = 10000
 
 RUN_BASELINES = True
+RUN_ALL = True
 
-if RUN_BASELINES:
+if RUN_ALL:
+    print("Running Both Baselines and LLM method.")
+elif RUN_BASELINES:
     print("Running Baselines only.")
 else:
     print("Running LLM method only.")
@@ -195,11 +204,11 @@ def run_experiment(optimizer_name, predictor_cls=None, predictor_kwargs=None):
 # --- EXPERIMENTS ---
 
 # 1. The "True" Baseline (No Predictor)
-if RUN_BASELINES:
+if RUN_BASELINES or RUN_ALL:
     run_experiment("rea")
 
 # 2c. The "Competitor" (Bananas with XGBoost Predictor)
-if RUN_BASELINES:
+if RUN_BASELINES or RUN_ALL:
     run_experiment(
         "bananas",
         predictor_cls=CustomXGBoost,
@@ -217,7 +226,7 @@ if RUN_BASELINES:
     )
 
 # 3c. "Ours" (Bananas with LLM Embeddings + XGBoost Predictor)
-if not RUN_BASELINES:
+if not RUN_BASELINES or RUN_ALL:
     run_experiment(
         "bananas",
         predictor_cls=LLM_NB201_Predictor,
