@@ -1,0 +1,74 @@
+data: /storage/ice1/5/6/psomu3/codenas/NASLib/naslib/data
+dataset: cifar100
+debug_predictor: True
+eval_only: False
+evaluation:
+  auxiliary_weight: 0.4
+  batch_size: 96
+  checkpoint_freq: 30
+  cutout: True
+  cutout_length: 16
+  cutout_prob: 1.0
+  data_size: 50000
+  dist_backend: nccl
+  dist_url: tcp://127.0.0.1:8888
+  drop_path_prob: 0.2
+  epochs: 600
+  gpu: None
+  grad_clip: 5
+  learning_rate: 0.025
+  learning_rate_min: 0.0
+  momentum: 0.9
+  multiprocessing_distributed: False
+  rank: 0
+  train_portion: 1.0
+  warm_start_epochs: 0
+  weight_decay: 0.0003
+  world_size: 1
+gpu: None
+model_path: None
+optimizer: Default_rea
+out_dir: run_nb201
+resume: False
+save: run_nb201/nasbench201/cifar100/Default_rea/246
+save_arch_weights: False
+search:
+  acq_fn_optimization: mutation
+  acq_fn_type: its
+  arch_learning_rate: 0.0003
+  arch_weight_decay: 0.001
+  batch_size: 64
+  checkpoint_freq: 10000
+  cutout: False
+  cutout_length: 16
+  cutout_prob: 1.0
+  data_size: 25000
+  debug_predictor: False
+  drop_path_prob: 0.0
+  encoding_type: path
+  epochs: 145
+  fidelity: 200
+  gpu: None
+  grad_clip: 5
+  k: 5
+  learning_rate: 0.025
+  learning_rate_min: 0.001
+  max_mutations: 1
+  momentum: 0.9
+  num_arches_to_mutate: 45
+  num_candidates: 1000
+  num_ensemble: 3
+  num_init: 20
+  output_weights: True
+  population_size: 100
+  predictor_type: var_sparse_gp
+  sample_size: 10
+  seed: 246
+  tau_max: 10
+  tau_min: 0.1
+  train_portion: 0.5
+  unrolled: False
+  warm_start_epochs: 0
+  weight_decay: 0.0003
+search_space: nasbench201
+seed: 99
