@@ -1,4 +1,9 @@
 import os
+
+os.environ["OMP_NUM_THREADS"] = "4" 
+os.environ["MKL_NUM_THREADS"] = "4" 
+os.environ["OPENBLAS_NUM_THREADS"] = "4"
+
 import torch
 import numpy as np
 import logging
@@ -19,6 +24,8 @@ from naslib.predictors.ensemble import Ensemble
 from naslib.predictors.trees.xgb import XGBoost
 from naslib.predictors.gp import VarSparseGPPredictor, GPPredictor
 from naslib.predictors.llm_enhanced_201 import LLM_NB201_Predictor 
+from naslib.predictors.mlp import MLPPredictor
+
 
 from naslib.optimizers.discrete.bananas import optimizer as bananas_opt
 from naslib.optimizers.discrete.bananas import acquisition_functions as acq_funcs
@@ -56,6 +63,40 @@ class CustomXGBoost(XGBoost):
         # Re-apply custom hyperparams just in case fit() tries to reset them
         if self.hyperparams is None:
             self.hyperparams = self.default_hyperparams.copy()
+        self.hyperparams.update(self.custom_hyperparams)
+        
+        return super().fit(xtrain, ytrain, train_info, params, **kwargs)
+    
+
+class CustomMLP(MLPPredictor):
+    def __init__(self, **kwargs):
+        # 1. Define arguments allowed by BasePredictor.__init__
+        # We must filter these out so we don't pass 'lr' or 'epochs' to the parent class
+        base_valid_args = ['encoding_type', 'ss_type', 'zc', 'zc_only', 
+                           'hpo_wrapper', 'hparams_from_file', 'config']
+        
+        # 2. Split kwargs into Base args and Hyperparameters
+        base_args = {k: v for k, v in kwargs.items() if k in base_valid_args}
+        self.custom_hyperparams = {k: v for k, v in kwargs.items() if k not in base_valid_args}
+
+        # 3. Initialize Parent (MLPPredictor)
+        super().__init__(**base_args)
+
+        # 4. Inject Hyperparameters
+        if self.hyperparams is None:
+            # Load defaults if not already present
+            self.hyperparams = self.default_hyperparams.copy()
+        
+        # Update with your custom values (e.g., batch_size, lr)
+        self.hyperparams.update(self.custom_hyperparams)
+        
+        print(f"[CustomMLP] Hyperparams set: {self.hyperparams}")
+
+    def fit(self, xtrain, ytrain, train_info=None, params=None, **kwargs):
+        # Ensure custom hyperparams persist even if fit() tries to reset them
+        if self.hyperparams is None:
+            self.hyperparams = self.default_hyperparams.copy()
+        
         self.hyperparams.update(self.custom_hyperparams)
         
         return super().fit(xtrain, ytrain, train_info, params, **kwargs)
