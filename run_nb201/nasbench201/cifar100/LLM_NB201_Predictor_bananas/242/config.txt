@@ -46,19 +46,19 @@ search:
   debug_predictor: False
   drop_path_prob: 0.0
   encoding_type: path
-  epochs: 145
+  epochs: 410
   fidelity: 200
   gpu: None
   grad_clip: 5
   k: 5
   learning_rate: 0.025
   learning_rate_min: 0.001
-  max_mutations: 1
+  max_mutations: 2
   momentum: 0.9
-  num_arches_to_mutate: 45
-  num_candidates: 1000
+  num_arches_to_mutate: 6
+  num_candidates: 2000
   num_ensemble: 3
-  num_init: 20
+  num_init: 10
   output_weights: True
   population_size: 100
   predictor_type: var_sparse_gp
@@ -71,4 +71,4 @@ search:
   warm_start_epochs: 0
   weight_decay: 0.0003
 search_space: nasbench201
-seed: 99
+seed: 242
