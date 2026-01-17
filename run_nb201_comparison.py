@@ -38,10 +38,6 @@ from naslib.predictors.trees.xgb import XGBoost
 from naslib.predictors.gp import VarSparseGPPredictor, GPPredictor
 from naslib.predictors.llm_enhanced_201 import LLM_NB201_Predictor 
 from naslib.predictors.mlp import MLPPredictor
-<<<<<<< HEAD
-=======
-
->>>>>>> aff51de78836a5e9f86c029ff6e1bed5308e2419
 
 from naslib.optimizers.discrete.bananas import optimizer as bananas_opt
 from naslib.optimizers.discrete.bananas import acquisition_functions as acq_funcs
