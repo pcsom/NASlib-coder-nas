@@ -18,6 +18,10 @@ from naslib.search_spaces.core.query_metrics import Metric
 from naslib.utils import AttrDict, count_parameters_in_MB, get_train_val_loaders
 from naslib.utils.log import log_every_n_seconds
 
+# for the test set caching and kendall tau calculation
+from scipy.stats import kendalltau
+import pickle
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +55,11 @@ class Bananas(MetaOptimizer):
         self.next_batch = []
         self.history = torch.nn.ModuleList()
 
+        self.test_size = 200
+        self.test_data = []
+        self.test_accuracies = []
+        self.surrogate_test_metrics = [] # store KT over time
+
         self.zc = config.search.zc if hasattr(config.search, 'zc') else None
         self.semi = "semi" in self.predictor_type 
         self.zc_api = zc_api
@@ -78,6 +87,43 @@ class Bananas(MetaOptimizer):
                 self.config, mode="train")
         if self.semi:
             self.unlabeled = []
+        
+        # Create a unique filename for this search space + dataset combo
+        cache_filename = f"fixed_test_set_{self.search_space.get_type()}_{self.dataset}.pkl"
+
+        if os.path.exists(cache_filename):
+            logger.info(f"Loading fixed test set from cache: {cache_filename}")
+            try:
+                with open(cache_filename, 'rb') as f:
+                    self.test_data, self.test_accuracies = pickle.load(f)
+            except Exception as e:
+                logger.info(f"Failed to load cache ({e}), regenerating...")
+                self.test_data = [] # Trigger regeneration below
+        else:
+            # Initialize lists if cache didn't exist
+            self.test_data = []
+
+        # Generate if we didn't load successfully
+        if not self.test_data:
+            logger.info(f"Generating new fixed test set ({self.test_size} samples)...")
+            self.test_accuracies = []
+            
+            for _ in range(self.test_size):
+                arch = self.search_space.clone()
+                arch.sample_random_architecture(dataset_api=self.dataset_api)
+                
+                # Query ground truth
+                acc = arch.query(self.performance_metric, self.dataset, dataset_api=self.dataset_api)
+                
+                self.test_data.append(arch)
+                self.test_accuracies.append(acc)
+            
+            # Save to cache for next time
+            logger.info(f"Saving fixed test set to {cache_filename}")
+            with open(cache_filename, 'wb') as f:
+                pickle.dump((self.test_data, self.test_accuracies), f)
+        
+        print(f'[Bananas Optimizer] Test set generation complete.')
 
     def get_zero_cost_predictors(self):
         return {zc_name: ZeroCost(method_type=zc_name) for zc_name in self.zc_names}
@@ -224,6 +270,16 @@ class Bananas(MetaOptimizer):
 
                 ensemble.fit(xtrain, ytrain)
 
+                # Predict scores for the test set
+                pred_scores = ensemble.query(self.test_data)
+                
+                # Calculate Kendall Tau (Ranking Correlation)
+                tau, _ = kendalltau(self.test_accuracies, pred_scores)
+                
+                # Log the metric
+                self.surrogate_test_metrics.append(tau)
+                logger.info(f"Epoch {epoch}: Surrogate Test Kendall Tau = {tau:.4f}")
+                # -----------------------------------------------
                 # define an acquisition function
                 acq_fn = acquisition_function(
                     ensemble=ensemble, ytrain=ytrain, acq_fn_type=self.acq_fn_type

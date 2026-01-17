@@ -29,4 +29,4 @@ fi
 
 nvidia-smi
 module load anaconda3/2023.03
-conda run -n naslib39v2 --no-capture-output $PYTHON_CMD
+conda run -n mvenv --no-capture-output $PYTHON_CMD

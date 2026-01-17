@@ -42,6 +42,8 @@ from naslib.predictors.mlp import MLPPredictor
 from naslib.optimizers.discrete.bananas import optimizer as bananas_opt
 from naslib.optimizers.discrete.bananas import acquisition_functions as acq_funcs
 
+import matplotlib.pyplot as plt
+
 # Store custom args for use later in the script
 args = custom_args
 
@@ -393,7 +395,7 @@ def run_experiment(optimizer_name, predictor_cls=None, predictor_kwargs=None):
         optimizer = Bananas(config)
     elif optimizer_name == "npenas":
         optimizer = Npenas(config)
-    
+   
     # 2. Setup Search Space (NB201)
     search_space = NasBench201SearchSpace()
     optimizer.adapt_search_space(search_space, dataset_api=dataset_api)
@@ -431,7 +433,28 @@ def run_experiment(optimizer_name, predictor_cls=None, predictor_kwargs=None):
     write_config_to_file()
     trainer = Trainer(optimizer, config, lightweight_output=True)
     trainer.search() 
-    
+
+    # Access the optimizer instance from the trainer
+    optimizer = trainer.optimizer
+
+    # Retrieve the stored metrics
+    if hasattr(optimizer, 'surrogate_test_metrics') and len(optimizer.surrogate_test_metrics) > 0:
+        metrics = optimizer.surrogate_test_metrics
+        epochs = range(len(metrics))
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(epochs, metrics, marker='o', linestyle='-', color='b', label='Kendall Tau')
+        plt.title(f'Surrogate Generalization on Test Set ({config.optimizer})')
+        plt.xlabel('Search Iterations (Model Updates)')
+        plt.ylabel('Kendall Tau')
+        plt.grid(True)
+        plt.legend()
+        
+        # Save the plot
+        plot_path = os.path.join(config.save, "surrogate_test_accuracy.png")
+        plt.savefig(plot_path)
+        print(f"Surrogate accuracy plot saved to {plot_path}")
+        plt.close()
     return trainer.optimizer.history
 
 
