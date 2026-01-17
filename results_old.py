@@ -6,23 +6,21 @@ import os
 # --- Configuration ---
 # Update these paths to point to your actual 3 json files
 space = "nasbench201"
-seed = 412
-dataset = "cifar10"
-surrogate = "mlp"
-
-surrogate_name_map = {
-    "xgboost": "CustomXGBoost",
-    "mlp": "CustomMLP"
-}
+seed = 342
+dataset = "cifar100"
+surrogate = "xgboost"
 
 if space == "nasbench201":
-    llm_pred = f"LLM_NB201_Predictor_{surrogate_name_map[surrogate]}_bananas"
+    llm_pred = "LLM_NB201_Predictor_bananas"
     run = "run_nb201"
 elif space == "nasbench301":
-    llm_pred = f"LLM_NB301_Predictor_{surrogate_name_map[surrogate]}_bananas"
+    llm_pred = "LLM_NB301_Predictor_bananas"
     run = "run_nb301"
 
-surrogate_folder = f"{surrogate_name_map[surrogate]}_bananas"
+if surrogate == "xgboost":
+    surrogate_folder = "CustomXGBoost_bananas"
+elif surrogate == "mlp":
+    surrogate_folder = "CustomMLP_bananas"
 
 file_paths = {
     "REA (Default)": f"/home/hice1/psomu3/scratch/codenas/NASLib/{run}/{space}/{dataset}/Default_rea/{seed}/errors.json",

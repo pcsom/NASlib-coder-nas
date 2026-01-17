@@ -12,7 +12,7 @@ from naslib.utils.encodings import EncodingType
 from naslib.predictors import Predictor
 
 # NOTE: faster on CPU
-device = torch.device("cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def accuracy_mse(prediction, target, scale=100.0):

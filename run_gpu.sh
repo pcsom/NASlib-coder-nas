@@ -5,11 +5,28 @@
 #SBATCH --time=5:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --output=slurm_logs/naslib301_%j.out
+#SBATCH --output=slurm_logs/naslib201_%j.out
 
-# Accept seed as first argument, default to 242 if not provided
+# Accept arguments with defaults
 SEED=${1:-242}
+RUN_BASELINES=${2:-false}
+SURROGATE=${3:-mlp}
+
+# echo each argument
+echo "SEED: $SEED"
+echo "RUN_BASELINES: $RUN_BASELINES"
+echo "SURROGATE: $SURROGATE"
+
+# Build the Python command
+PYTHON_CMD="python -u run_nb201_comparison.py --seed $SEED --surrogate $SURROGATE"
+
+# Add --run_baselines flag if true
+if [ "$RUN_BASELINES" = "true" ]; then
+    PYTHON_CMD="$PYTHON_CMD --run_baselines"
+fi
+
+# sbatch run_gpu.sh 456 false xgboost
 
 nvidia-smi
 module load anaconda3/2023.03
-conda run -n naslib39v2 --no-capture-output python -u run_nb301_comparison.py --seed $SEED
+conda run -n naslib39v2 --no-capture-output $PYTHON_CMD
