@@ -6,6 +6,7 @@ from sklearn.decomposition import PCA
 
 # NASLib Utilities for NASBench201
 from naslib.search_spaces.nasbench201.conversions import convert_naslib_to_str
+from naslib.search_spaces.nasbench201.conversions import convert_op_indices_to_str
 
 # ==========================================
 # 1. PRE-COMPUTED EMBEDDING CACHE LOADER (SINGLETON)
@@ -144,7 +145,16 @@ class LLM_NB201_Predictor:
         Uses convert_naslib_to_str for NASBench201 architecture strings.
         """
         # Convert architectures to strings
-        arch_strings = [convert_naslib_to_str(arch) for arch in architectures]
+        # arch_strings = [convert_naslib_to_str(arch) for arch in architectures]
+        arch_strings = []
+        for arch in architectures:
+            # Use the fast, graph-free conversion
+            if hasattr(arch, 'op_indices') and arch.op_indices is not None:
+                s = convert_op_indices_to_str(arch.op_indices)
+            else:
+                # Fallback (should not be reached with hollow patch)
+                s = convert_naslib_to_str(arch)
+            arch_strings.append(s)
         
         # Retrieve from cache
         embeddings = self.cache_loader.get_embeddings(arch_strings)

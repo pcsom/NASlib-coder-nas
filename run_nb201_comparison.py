@@ -4,10 +4,23 @@ import numpy as np
 import logging
 from scipy.stats import norm
 import sys
+import time
 import types
 import copy
 import argparse
 
+# --- PARSE CUSTOM ARGUMENTS FIRST (before any NASLib imports) ---
+parser = argparse.ArgumentParser(add_help=False)
+parser.add_argument('--seed', type=int, default=242, help='Random seed for reproducibility')
+parser.add_argument('--run_baselines', action='store_true', help='Run baseline experiments')
+parser.add_argument('--surrogate', type=str, default='mlp', choices=['xgboost', 'mlp'], help='Surrogate model type')
+custom_args, remaining = parser.parse_known_args()
+
+# Update sys.argv to only contain args that NASLib's parser understands
+# NASLib parser accepts --seed, so we keep it
+sys.argv = [sys.argv[0], '--seed', str(custom_args.seed)] + remaining
+
+# NOW import NASLib (which will parse the cleaned sys.argv)
 from naslib import utils 
 from naslib.utils import get_dataset_api, create_exp_dir
 from naslib.utils.encodings import EncodingType
@@ -19,14 +32,13 @@ from naslib.predictors.ensemble import Ensemble
 from naslib.predictors.trees.xgb import XGBoost
 from naslib.predictors.gp import VarSparseGPPredictor, GPPredictor
 from naslib.predictors.llm_enhanced_201 import LLM_NB201_Predictor 
+from naslib.predictors.mlp import MLPPredictor
 
 from naslib.optimizers.discrete.bananas import optimizer as bananas_opt
 from naslib.optimizers.discrete.bananas import acquisition_functions as acq_funcs
 
-# --- PARSE ARGUMENTS ---
-parser = argparse.ArgumentParser(description='Run NASBench201 comparison experiments')
-parser.add_argument('--seed', type=int, default=242, help='Random seed for reproducibility')
-args = parser.parse_args()
+# Store custom args for use later in the script
+args = custom_args
 
 class CustomXGBoost(XGBoost):
     def __init__(self, **kwargs):
@@ -53,34 +65,86 @@ class CustomXGBoost(XGBoost):
         print(f"[CustomXGBoost] Hyperparams set: {self.hyperparams}")
 
     def fit(self, xtrain, ytrain, train_info=None, params=None, **kwargs):
+        # Start timestamp
+        start = time.time()
         # Re-apply custom hyperparams just in case fit() tries to reset them
         if self.hyperparams is None:
             self.hyperparams = self.default_hyperparams.copy()
         self.hyperparams.update(self.custom_hyperparams)
         
-        return super().fit(xtrain, ytrain, train_info, params, **kwargs)
+        result = super().fit(xtrain, ytrain, train_info, params, **kwargs)
+
+        # End timestamp
+        end = time.time()
+        print(f"[CustomXGBoost] Training completed in {end - start:.2f} seconds.")
+        return result
+
+
+class CustomMLP(MLPPredictor):
+    def __init__(self, **kwargs):
+        # 1. Define arguments allowed by BasePredictor.__init__
+        # We must filter these out so we don't pass 'lr' or 'epochs' to the parent class
+        base_valid_args = ['encoding_type', 'ss_type', 'zc', 'zc_only', 
+                           'hpo_wrapper', 'hparams_from_file', 'config']
+        
+        # 2. Split kwargs into Base args and Hyperparameters
+        base_args = {k: v for k, v in kwargs.items() if k in base_valid_args}
+        self.custom_hyperparams = {k: v for k, v in kwargs.items() if k not in base_valid_args}
+
+        # 3. Initialize Parent (MLPPredictor)
+        super().__init__(**base_args)
+
+        # 4. Inject Hyperparameters
+        if self.hyperparams is None:
+            # Load defaults if not already present
+            self.hyperparams = self.default_hyperparams.copy()
+        
+        # Update with your custom values (e.g., batch_size, lr)
+        self.hyperparams.update(self.custom_hyperparams)
+        
+        print(f"[CustomMLP] Hyperparams set: {self.hyperparams}")
+
+    def fit(self, xtrain, ytrain, train_info=None, params=None, **kwargs):
+        # Start timestamp
+        start = time.time()
+        # Ensure custom hyperparams persist even if fit() tries to reset them
+        if self.hyperparams is None:
+            self.hyperparams = self.default_hyperparams.copy()
+        
+        self.hyperparams.update(self.custom_hyperparams)
+        
+        result = super().fit(xtrain, ytrain, train_info=train_info, epochs=self.hyperparams["epochs"], loss=self.hyperparams["loss"], **kwargs)
+        # End timestamp
+        end = time.time()
+        print(f"[CustomMLP] Training completed in {end - start:.2f} seconds.")
+        return result
 
 # --- CONFIGURATION ---
 config = utils.get_config_from_args(config_type="nas")
-config.dataset = "cifar100"
+config.dataset = "cifar10"
 config.search_space = "nasbench201" 
 config.out_dir = "/home/hice1/psomu3/scratch/codenas/NASLib/results_nb201" # New output dir
 config.optimizer = "" 
 config.search.seed = args.seed
+config.seed = args.seed
 config.save_arch_weights = False
 config.search.num_init = 20
-config.search.k = 5
-config.search.epochs = 25*config.search.k + config.search.num_init
-config.search.num_candidates = 1000
+config.search.k = 10
+config.search.epochs = 40*config.search.k + config.search.num_init
+config.search.num_candidates = 200
 config.out_dir = "run_nb201"
 config.debug_predictor = True
 config.search.num_ensemble = 3
-config.search.num_arches_to_mutate = 45
+config.search.num_arches_to_mutate = 5
 config.search.max_mutations = 1
 config.search.checkpoint_freq = 10000
 
-RUN_BASELINES = True
+RUN_BASELINES = args.run_baselines
 RUN_ALL = True
+SURROGATE = args.surrogate  # Options: 'xgboost' or 'mlp'
+
+print("RUN_BASELINES:", RUN_BASELINES)
+print("SURROGATE:", SURROGATE)
 
 if RUN_ALL:
     print("Running Both Baselines and LLM method.")
@@ -111,22 +175,48 @@ def write_config_to_file():
         f.write(str(config))
     print(f"Configuration saved to {config_save_path}")
 
-def batch_acquisition_function(ensemble, ytrain, acq_fn_type="its", explore_factor=0.5, ei_calibration_factor=5.0):
-    # Minimal wrapper to handle batch inputs (axis=0)
-    def get_stats(preds): return np.mean(preds, axis=0), np.std(preds, axis=0)
+original_acq_factory = acq_funcs.acquisition_function
 
-    if acq_fn_type == "its":
-        return lambda archs, info=None: np.random.normal(*get_stats(ensemble.query(archs, info)))
-    elif acq_fn_type == "ucb":
-        return lambda archs, info=None: (lambda m, s: m + explore_factor * s)(*get_stats(ensemble.query(archs, info)))
-    elif acq_fn_type == "ei":
-        def ei(archs, info=None):
-            m, s = get_stats(ensemble.query(archs, info))
-            fs = s / ei_calibration_factor
-            gam = (m - ytrain.max()) / fs
-            return fs * (gam * norm.cdf(gam) + norm.pdf(gam))
-        return ei
-    return acq_funcs.acquisition_function(ensemble, ytrain, acq_fn_type, explore_factor, ei_calibration_factor)
+def batch_acquisition_function(ensemble, ytrain, acq_fn_type="its", explore_factor=0.5, ei_calibration_factor=5.0):
+    """
+    Batched wrapper that returns a function capable of processing 
+    a list of architectures in one shot.
+    """
+    
+    # Define helper to handle batch statistics (N, Ensemble_Size) -> (N,)
+    def get_stats(preds): 
+        return np.mean(preds, axis=0), np.std(preds, axis=0)
+
+    # 2. Define the ACTUAL execution logic (The thing that runs on GPU)
+    def batched_executor(archs, info=None):
+        t0 = time.time()
+        
+        # A. Batch Inference (The Bottleneck)
+        # ensemble.query passes the full list 'archs' to the predictor
+        # This triggers ONE gpu call instead of 2000
+        preds = ensemble.query(archs, info) 
+        
+        # B. Acquisition Math
+        mean, std = get_stats(preds)
+        
+        if acq_fn_type == "its":
+            scores = np.random.normal(mean, std)
+        elif acq_fn_type == "ucb":
+            scores = mean + explore_factor * std
+        elif acq_fn_type == "ei":
+            fs = std / ei_calibration_factor
+            gam = (mean - ytrain.max()) / fs
+            scores = fs * (gam * norm.cdf(gam) + norm.pdf(gam))
+        else:
+            # Fallback for unknown types (rare)
+            scores = original_acq_factory(ensemble, ytrain, acq_fn_type)(archs, info)
+
+        t1 = time.time()
+        print(f"[Batch Acquisition] Processed {len(archs)} candidates in {t1-t0:.4f}s")
+        return scores
+
+    # 3. Return the batched callable
+    return batched_executor
 
 def _get_best_candidates_batch(self, candidates, acq_fn):
     # Pass full list to acq_fn instead of loop
@@ -142,11 +232,154 @@ print("Patched Bananas optimizer for batch acquisition function.")
 # --- LOAD API ---
 dataset_api = get_dataset_api(config.search_space, config.dataset)
 
+# --- MONKEY PATCH TO DEBUG TIMING ---
+def debug_new_epoch(self, epoch):
+    import time
+    
+    if epoch < self.num_init:
+        model = self._sample_new_model()
+        self._set_scores(model)
+    else:
+        if len(self.next_batch) == 0:
+            # 1. Train
+            print("[Debug] Starting Fit...")
+            t0 = time.time()
+            xtrain, ytrain = self._get_train()
+            ensemble = self._get_ensemble()
+            
+            # Setup semi-supervised if needed (omitted for brevity as self.semi usually False)
+            
+            ensemble.fit(xtrain, ytrain)
+            t1 = time.time()
+            print(f"[Debug] Fit finished in {t1-t0:.2f}s")
+
+            # 2. Acquisition Setup
+            acq_fn = bananas_opt.acquisition_function(
+                ensemble=ensemble, ytrain=ytrain, acq_fn_type=self.acq_fn_type
+            )
+
+            # 3. Candidate Generation
+            print(f"[Debug] Generating {self.num_candidates} candidates...")
+            t2 = time.time()
+            candidates = self._get_new_candidates(ytrain=ytrain)
+            t3 = time.time()
+            print(f"[Debug] Generated candidates in {t3-t2:.2f}s")
+
+            # 4. Selection (Acquisition)
+            print("[Debug] Selecting best candidates...")
+            self.next_batch = self._get_best_candidates(candidates, acq_fn)
+            t4 = time.time()
+            print(f"[Debug] Selection finished in {t4-t3:.2f}s")
+
+        # 5. Evaluation
+        print(f"[Debug] Evaluating architecture {len(self.next_batch)}...")
+        t5 = time.time()
+        model = self.next_batch.pop()
+        self._set_scores(model)
+        print(f"[Debug] Evaluation finished in {time.time()-t5:.2f}s")
+
+# Apply the patch
+bananas_opt.Bananas.new_epoch = debug_new_epoch
+print("Monkey-patched Bananas.new_epoch for profiling.")
+
+
+
+
+# =============================================================================
+# STRICTLY MINIMAL PATCH: SPEED + ACCURACY FIX
+# =============================================================================
+import torch
+import torch.nn as nn
+from naslib.search_spaces.core import primitives as core_ops
+from naslib.search_spaces.nasbench201 import primitives as nb201_ops
+import naslib.search_spaces.nasbench201.conversions as conversions_mod
+from naslib.search_spaces import NasBench201SearchSpace
+
+print("[Patch] Applying Minimal Fixes...")
+
+# -----------------------------------------------------------------------------
+# 1. SPEED FIX: Replace the Heavy Primitives
+# -----------------------------------------------------------------------------
+# We replace the __init__ methods of the heavy classes. 
+
+def fast_relu_init(self, C_in, C_out, kernel_size, stride=1, affine=True, track_running_stats=True, **kwargs):
+    super(core_ops.ReLUConvBN, self).__init__(locals())
+    self.kernel_size = kernel_size  # Required for get_op_name
+    self.stride = stride
+    self.C_in = C_in
+    self.C_out = C_out
+    # Speedup: No nn.Conv2d created here.
+
+def fast_avg_pool_init(self, kernel_size, stride=1, affine=True, **kwargs):
+    super(core_ops.AvgPool1x1, self).__init__(locals())
+    self.kernel_size = kernel_size  # Required for get_op_name
+    self.stride = stride
+
+def fast_stem_init(self, C_in, C_out, **kwargs):
+    super(core_ops.Stem, self).__init__(locals())
+    self.C_in = C_in
+    self.C_out = C_out
+
+def fast_resnet_init(self, C_in, C_out, stride, affine=True, track_running_stats=True, **kwargs):
+    super(nb201_ops.ResNetBasicblock, self).__init__(locals())
+    self.stride = stride
+    self.C_in = C_in
+    self.C_out = C_out
+
+# Apply the swaps in-place.
+core_ops.ReLUConvBN.__init__ = fast_relu_init
+core_ops.AvgPool1x1.__init__ = fast_avg_pool_init
+core_ops.Stem.__init__ = fast_stem_init
+nb201_ops.ResNetBasicblock.__init__ = fast_resnet_init
+
+print("[Patch] Primitives are now lightweight. Graph creation should be <0.001s.")
+
+# =============================================================================
+# OPTIMIZED PATCH: HOLLOW SEARCH SPACE (SAFE MODE)
+# =============================================================================
+def fast_hollow_init(self, n_classes=10, in_channels=3):
+    """
+    Replacement __init__ that skips building the graph topology.
+    """
+    # Initialize parent without heavy setup
+    super(NasBench201SearchSpace, self).__init__()
+    
+    # Essential attributes for NASLib
+    self.num_classes = n_classes
+    self.op_indices = None
+    self.max_epoch = 199
+    self.in_channels = in_channels
+    self.space_name = "nasbench201"
+    self.labeled_archs = None
+    
+    # CRITICAL: Disables graph interaction
+    self.instantiate_model = False 
+    self.sample_without_replacement = False
+
+# Override get_op_indices to never look at the (non-existent) graph
+def safe_get_op_indices(self):
+    if self.op_indices is None:
+        # Fallback if accessed before setting (should not happen in Bananas)
+        raise ValueError("Attempted to access op_indices of uninitialized Hollow Graph")
+    return self.op_indices
+
+# Apply patches
+NasBench201SearchSpace.__init__ = fast_hollow_init
+NasBench201SearchSpace.get_op_indices = safe_get_op_indices
+
+print("[Patch] NasBench201SearchSpace is now hollow and safe.")
+
+
+
 def run_experiment(optimizer_name, predictor_cls=None, predictor_kwargs=None):
     p_name = predictor_cls.__name__ if predictor_cls else "Default"
     print(f"\n\n>>> RUNNING: {optimizer_name} (Predictor: {p_name}) <<<")
     
-    config.optimizer = f"{p_name}_{optimizer_name}"
+    if p_name == "LLM_NB201_Predictor":
+        base_pred = predictor_kwargs['base_predictor_cls'].__name__
+        config.optimizer = f"{p_name}_{base_pred}_{optimizer_name}"
+    else:
+        config.optimizer = f"{p_name}_{optimizer_name}"
     set_config_save()
 
     # 1. Select Optimizer
@@ -209,38 +442,74 @@ if RUN_BASELINES or RUN_ALL:
 
 # 2c. The "Competitor" (Bananas with XGBoost Predictor)
 if RUN_BASELINES or RUN_ALL:
-    run_experiment(
-        "bananas",
-        predictor_cls=CustomXGBoost,
-        predictor_kwargs={
-            "encoding_type": EncodingType.PATH, # Standard graph encoding
-            "ss_type": "nasbench201",
-            "hparams_from_file": False,
-            "nthread": 4,
-            "device": "cuda",
-            "tree_method": "hist"
-            # Hyperparams from NASLib Paper Table 2
-            # "max_depth": 6,
-            # "learning_rate": 0.3,
-        }
-    )
+    if SURROGATE == "xgboost":
+        run_experiment(
+            "bananas",
+            predictor_cls=CustomXGBoost,
+            predictor_kwargs={
+                "encoding_type": EncodingType.PATH, # Standard graph encoding
+                "ss_type": "nasbench201",
+                "hparams_from_file": False,
+                "nthread": 4,
+                "device": "cuda",
+                "tree_method": "hist"
+                # Hyperparams from NASLib Paper Table 2
+                # "max_depth": 6,
+                # "learning_rate": 0.3,
+            }
+        )
+    elif SURROGATE == "mlp":
+        run_experiment(
+            "bananas",
+            predictor_cls=CustomMLP,
+            predictor_kwargs={
+                "encoding_type": EncodingType.PATH, # Standard graph encoding
+                "ss_type": "nasbench201",
+                "num_layers": 3,
+                "layer_width": 128,
+                "batch_size": 32,
+                "lr": 0.001,
+                "epochs": 200, 
+                "loss": "mse"  # or 'mse'
+            }
+        )
 
 # 3c. "Ours" (Bananas with LLM Embeddings + XGBoost Predictor)
 if not RUN_BASELINES or RUN_ALL:
-    run_experiment(
-        "bananas",
-        predictor_cls=LLM_NB201_Predictor,
-        predictor_kwargs={
-            "base_predictor_cls": CustomXGBoost,
-            "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_embedded.csv',
-            "embedding_col": 'codellama_python_7b_pytorch_code_embedding',
-            "use_pca": True,
-            "pca_components": 64,
-            # Arguments for CustomXGBoost (passed via **kwargs)
-            "ss_type": "nasbench201",
-            "hparams_from_file": False,
-            "nthread": 4,
-            "device": "cuda",
-            "tree_method": "hist"
-        }
-    )
+    if SURROGATE == "xgboost":
+        run_experiment(
+            "bananas",
+            predictor_cls=LLM_NB201_Predictor,
+            predictor_kwargs={
+                "base_predictor_cls": CustomXGBoost,
+                "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_embedded.csv',
+                "embedding_col": 'codellama_python_7b_pytorch_code_embedding',
+                "use_pca": True,
+                "pca_components": 128,
+                # Arguments for CustomXGBoost (passed via **kwargs)
+                "ss_type": "nasbench201",
+                "hparams_from_file": False,
+                "nthread": 4,
+                "device": "cuda",
+                "tree_method": "hist"
+            }
+        )
+    elif SURROGATE == "mlp":
+        run_experiment(
+            "bananas",
+            predictor_cls=LLM_NB201_Predictor,
+            predictor_kwargs={
+                "base_predictor_cls": CustomMLP,
+                "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_embedded.csv',
+                "embedding_col": 'codellama_python_7b_pytorch_code_embedding',
+                "use_pca": True,
+                "pca_components": 64,
+                # --- MLP Specific Hyperparams ---
+                "num_layers": 3,
+                "layer_width": 128,
+                "batch_size": 32,
+                "lr": 0.001,
+                "epochs": 200, 
+                "loss": "mse"  # or 'mse'
+            }
+        )
