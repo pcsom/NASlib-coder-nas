@@ -23,6 +23,7 @@ from scipy.stats import kendalltau
 import pickle
 import os
 
+from search_spaces.nasbench201.conversions import convert_naslib_to_op_indices, convert_op_indices_to_naslib
 logger = logging.getLogger(__name__)
 
 
@@ -95,7 +96,8 @@ class Bananas(MetaOptimizer):
             logger.info(f"Loading fixed test set from cache: {cache_filename}")
             try:
                 with open(cache_filename, 'rb') as f:
-                    self.test_data, self.test_accuracies = pickle.load(f)
+                    arch_op_indices, self.test_accuracies = pickle.load(f)
+                self.test_data = [convert_op_indices_to_naslib(self.search_space, op_indices) for op_indices in arch_op_indices]
             except Exception as e:
                 logger.info(f"Failed to load cache ({e}), regenerating...")
                 self.test_data = [] # Trigger regeneration below
@@ -121,7 +123,9 @@ class Bananas(MetaOptimizer):
             # Save to cache for next time
             logger.info(f"Saving fixed test set to {cache_filename}")
             with open(cache_filename, 'wb') as f:
-                pickle.dump((self.test_data, self.test_accuracies), f)
+                arch_op_indices = [convert_naslib_to_op_indices(arch) for arch in self.test_data]
+
+                pickle.dump((arch_op_indices, self.test_accuracies), f)
         
         print(f'[Bananas Optimizer] Test set generation complete.')
 
