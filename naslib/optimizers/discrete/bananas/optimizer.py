@@ -19,11 +19,10 @@ from naslib.utils import AttrDict, count_parameters_in_MB, get_train_val_loaders
 from naslib.utils.log import log_every_n_seconds
 
 # for the test set caching and kendall tau calculation
-from scipy.stats import kendalltau
 import pickle
 import os
 
-from search_spaces.nasbench201.conversions import convert_naslib_to_op_indices, convert_op_indices_to_naslib
+from search_spaces.nasbench201.conversions import convert_op_indices_to_naslib, convert_naslib_to_str, convert_str_to_op_indices, convert_naslib_to_op_indices
 logger = logging.getLogger(__name__)
 
 
@@ -93,13 +92,21 @@ class Bananas(MetaOptimizer):
         cache_filename = f"fixed_test_set_{self.search_space.get_type()}_{self.dataset}.pkl"
 
         if os.path.exists(cache_filename):
-            logger.info(f"Loading fixed test set from cache: {cache_filename}")
+            print(f"Loading fixed test set from cache: {cache_filename}")
             try:
                 with open(cache_filename, 'rb') as f:
                     arch_op_indices, self.test_accuracies = pickle.load(f)
-                self.test_data = [convert_op_indices_to_naslib(self.search_space, op_indices) for op_indices in arch_op_indices]
+                self.test_data = []
+                for op_indices in arch_op_indices:
+                    arch = self.search_space.clone()
+                    # For hollow architectures, just set op_indices directly
+                    if hasattr(arch, 'instantiate_model') and not arch.instantiate_model:
+                        arch.op_indices = op_indices
+                    else:
+                        convert_op_indices_to_naslib(op_indices, arch)
+                    self.test_data.append(arch)
             except Exception as e:
-                logger.info(f"Failed to load cache ({e}), regenerating...")
+                print(f"Failed to load cache ({e}), regenerating...")
                 self.test_data = [] # Trigger regeneration below
         else:
             # Initialize lists if cache didn't exist
@@ -107,24 +114,29 @@ class Bananas(MetaOptimizer):
 
         # Generate if we didn't load successfully
         if not self.test_data:
-            logger.info(f"Generating new fixed test set ({self.test_size} samples)...")
+            print(f"Generating new fixed test set ({self.test_size} samples)...")
             self.test_accuracies = []
             
             for _ in range(self.test_size):
                 arch = self.search_space.clone()
                 arch.sample_random_architecture(dataset_api=self.dataset_api)
                 
+                # Parse the architecture if needed (required for query and conversions)
+                if self.search_space.instantiate_model == True:
+                    arch.parse()
+                
                 # Query ground truth
                 acc = arch.query(self.performance_metric, self.dataset, dataset_api=self.dataset_api)
-                
+                print(f"Generated test architecture with {self.performance_metric}: {acc:.4f}") 
                 self.test_data.append(arch)
                 self.test_accuracies.append(acc)
-            
-            # Save to cache for next time
-            logger.info(f"Saving fixed test set to {cache_filename}")
-            with open(cache_filename, 'wb') as f:
-                arch_op_indices = [convert_naslib_to_op_indices(arch) for arch in self.test_data]
 
+            # Save to cache for next time
+            print(f"Saving fixed test set to {cache_filename}")
+            with open(cache_filename, 'wb') as f:
+                arch_op_indices = []
+                for arch in self.test_data:
+                    arch_op_indices.append(arch.get_op_indices())
                 pickle.dump((arch_op_indices, self.test_accuracies), f)
         
         print(f'[Bananas Optimizer] Test set generation complete.')

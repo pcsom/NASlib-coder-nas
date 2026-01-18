@@ -241,7 +241,8 @@ dataset_api = get_dataset_api(config.search_space, config.dataset)
 # --- MONKEY PATCH TO DEBUG TIMING ---
 def debug_new_epoch(self, epoch):
     import time
-    
+    from scipy.stats import kendalltau
+
     if epoch < self.num_init:
         model = self._sample_new_model()
         self._set_scores(model)
@@ -251,17 +252,17 @@ def debug_new_epoch(self, epoch):
             print("[Debug] Starting Fit...")
             t0 = time.time()
             xtrain, ytrain = self._get_train()
-            ensemble = self._get_ensemble()
+            self.ensemble = self._get_ensemble()
             
             # Setup semi-supervised if needed (omitted for brevity as self.semi usually False)
             
-            ensemble.fit(xtrain, ytrain)
+            self.ensemble.fit(xtrain, ytrain)
             t1 = time.time()
             print(f"[Debug] Fit finished in {t1-t0:.2f}s")
 
             # 2. Acquisition Setup
             acq_fn = bananas_opt.acquisition_function(
-                ensemble=ensemble, ytrain=ytrain, acq_fn_type=self.acq_fn_type
+                ensemble=self.ensemble, ytrain=ytrain, acq_fn_type=self.acq_fn_type
             )
 
             # 3. Candidate Generation
@@ -276,6 +277,18 @@ def debug_new_epoch(self, epoch):
             self.next_batch = self._get_best_candidates(candidates, acq_fn)
             t4 = time.time()
             print(f"[Debug] Selection finished in {t4-t3:.2f}s")
+            
+            # Compute Kendall Tau on test set (only when ensemble is retrained)
+            pred_scores = self.ensemble.query(self.test_data)  # Shape: (num_ensemble, num_test)
+            # Aggregate ensemble predictions by taking mean across ensemble members
+            mean_pred_scores = np.mean(pred_scores, axis=0)  # Shape: (num_test,)
+            
+            # Calculate Kendall Tau (Ranking Correlation)
+            tau, _ = kendalltau(self.test_accuracies, mean_pred_scores)
+            
+            # Log the metric
+            self.surrogate_test_metrics.append(tau)
+            print(f"Epoch {epoch}: Surrogate Test Kendall Tau = {tau:.4f}")
 
         # 5. Evaluation
         print(f"[Debug] Evaluating architecture {len(self.next_batch)}...")
