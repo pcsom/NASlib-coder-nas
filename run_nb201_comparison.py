@@ -19,6 +19,7 @@ parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('--seed', type=int, default=242, help='Random seed for reproducibility')
 parser.add_argument('--run_baselines', action='store_true', help='Run baseline experiments')
 parser.add_argument('--surrogate', type=str, default='mlp', choices=['xgboost', 'mlp'], help='Surrogate model type')
+parser.add_argument('--trials', type=int, default=1, help='Number of trials to run')
 custom_args, remaining = parser.parse_known_args()
 
 # Update sys.argv to only contain args that NASLib's parser understands
@@ -125,7 +126,7 @@ class CustomMLP(MLPPredictor):
 
 # --- CONFIGURATION ---
 config = utils.get_config_from_args(config_type="nas")
-config.dataset = "cifar10"
+config.dataset = "cifar100"
 config.search_space = "nasbench201" 
 config.out_dir = "/home/hice1/psomu3/scratch/codenas/NASLib/results_nb201" # New output dir
 config.optimizer = "" 
@@ -133,19 +134,20 @@ config.search.seed = args.seed
 config.seed = args.seed
 config.save_arch_weights = False
 config.search.num_init = 20
-config.search.k = 10
+config.search.k = 20
 config.search.epochs = 40*config.search.k + config.search.num_init
 config.search.num_candidates = 200
 config.out_dir = "run_nb201"
 config.debug_predictor = True
 config.search.num_ensemble = 3
-config.search.num_arches_to_mutate = 5
+config.search.num_arches_to_mutate = 20
 config.search.max_mutations = 1
 config.search.checkpoint_freq = 10000
 
 RUN_BASELINES = args.run_baselines
 RUN_ALL = True
 SURROGATE = args.surrogate  # Options: 'xgboost' or 'mlp'
+NUM_TRIALS = args.trials
 
 print("RUN_BASELINES:", RUN_BASELINES)
 print("SURROGATE:", SURROGATE)
@@ -374,146 +376,150 @@ NasBench201SearchSpace.get_op_indices = safe_get_op_indices
 print("[Patch] NasBench201SearchSpace is now hollow and safe.")
 
 
+for i in range(NUM_TRIALS):
+    print(f"\n\n=== TRIAL {i+1}/{NUM_TRIALS} ===")
+    config.search.seed = args.seed*(i+1)
+    config.seed = config.search.seed
 
-def run_experiment(optimizer_name, predictor_cls=None, predictor_kwargs=None):
-    p_name = predictor_cls.__name__ if predictor_cls else "Default"
-    print(f"\n\n>>> RUNNING: {optimizer_name} (Predictor: {p_name}) <<<")
-    
-    if p_name == "LLM_NB201_Predictor":
-        base_pred = predictor_kwargs['base_predictor_cls'].__name__
-        config.optimizer = f"{p_name}_{base_pred}_{optimizer_name}"
-    else:
-        config.optimizer = f"{p_name}_{optimizer_name}"
-    set_config_save()
-
-    # 1. Select Optimizer
-    if optimizer_name == "rea":
-        optimizer = RegularizedEvolution(config)
-    elif optimizer_name == "bananas":
-        optimizer = Bananas(config)
-    elif optimizer_name == "npenas":
-        optimizer = Npenas(config)
-    
-    # 2. Setup Search Space (NB201)
-    search_space = NasBench201SearchSpace()
-    optimizer.adapt_search_space(search_space, dataset_api=dataset_api)
-
-    
-    # 3. INJECT CUSTOM PREDICTOR
-    if predictor_cls is not None:
-        print(f"Injecting Custom Predictor: {p_name}")
+    def run_experiment(optimizer_name, predictor_cls=None, predictor_kwargs=None):
+        p_name = predictor_cls.__name__ if predictor_cls else "Default"
+        print(f"\n\n>>> RUNNING: {optimizer_name} (Predictor: {p_name}) <<<")
         
-        if optimizer_name == "bananas":
-            # --- MONKEY PATCHING ENSEMBLE ---
-            def _get_custom_ensemble(self):
-                ensemble = Ensemble(num_ensemble=self.num_ensemble, ss_type=self.ss_type, predictor_type=self.predictor_type, config=self.config, zc=self.zc)
-                # CHANGE: Create 3 instances matching the given custom predictor
-                ensemble.ensemble = [
-                    predictor_cls(**predictor_kwargs) 
-                    for _ in range(self.num_ensemble)
-                ]
-                # try:
-                #     print("Ensemble Predictor Hyperparameters:")
-                #     print(ensemble.ensemble[0].default_hyperparams)
-                # except:
-                #     print("Predictor has no default_hyperparams attribute.")
-                return ensemble
-
-            optimizer._get_ensemble = types.MethodType(_get_custom_ensemble, optimizer)
-            # --- END MONKEY PATCHING ---
+        if p_name == "LLM_NB201_Predictor":
+            base_pred = predictor_kwargs['base_predictor_cls'].__name__
+            config.optimizer = f"{p_name}_{base_pred}_{optimizer_name}"
         else:
-            optimizer.predictor = predictor_cls(**predictor_kwargs)
-    
-    # 4. Run Search
-    create_exp_dir(config.save)
-    create_exp_dir(config.save + "/search")
-    create_exp_dir(config.save + "/eval")
-    write_config_to_file()
-    trainer = Trainer(optimizer, config, lightweight_output=True)
-    trainer.search() 
-    
-    return trainer.optimizer.history
+            config.optimizer = f"{p_name}_{optimizer_name}"
+        set_config_save()
+
+        # 1. Select Optimizer
+        if optimizer_name == "rea":
+            optimizer = RegularizedEvolution(config)
+        elif optimizer_name == "bananas":
+            optimizer = Bananas(config)
+        elif optimizer_name == "npenas":
+            optimizer = Npenas(config)
+        
+        # 2. Setup Search Space (NB201)
+        search_space = NasBench201SearchSpace()
+        optimizer.adapt_search_space(search_space, dataset_api=dataset_api)
+
+        
+        # 3. INJECT CUSTOM PREDICTOR
+        if predictor_cls is not None:
+            print(f"Injecting Custom Predictor: {p_name}")
+            
+            if optimizer_name == "bananas":
+                # --- MONKEY PATCHING ENSEMBLE ---
+                def _get_custom_ensemble(self):
+                    ensemble = Ensemble(num_ensemble=self.num_ensemble, ss_type=self.ss_type, predictor_type=self.predictor_type, config=self.config, zc=self.zc)
+                    # CHANGE: Create 3 instances matching the given custom predictor
+                    ensemble.ensemble = [
+                        predictor_cls(**predictor_kwargs) 
+                        for _ in range(self.num_ensemble)
+                    ]
+                    # try:
+                    #     print("Ensemble Predictor Hyperparameters:")
+                    #     print(ensemble.ensemble[0].default_hyperparams)
+                    # except:
+                    #     print("Predictor has no default_hyperparams attribute.")
+                    return ensemble
+
+                optimizer._get_ensemble = types.MethodType(_get_custom_ensemble, optimizer)
+                # --- END MONKEY PATCHING ---
+            else:
+                optimizer.predictor = predictor_cls(**predictor_kwargs)
+        
+        # 4. Run Search
+        create_exp_dir(config.save)
+        create_exp_dir(config.save + "/search")
+        create_exp_dir(config.save + "/eval")
+        write_config_to_file()
+        trainer = Trainer(optimizer, config, lightweight_output=True)
+        trainer.search() 
+        
+        return trainer.optimizer.history
 
 
 
 
 
-# --- EXPERIMENTS ---
+    # --- EXPERIMENTS ---
 
-# 1. The "True" Baseline (No Predictor)
-if RUN_BASELINES or RUN_ALL:
-    run_experiment("rea")
+    # 1. The "True" Baseline (No Predictor)
+    if RUN_BASELINES or RUN_ALL:
+        run_experiment("rea")
 
-# 2c. The "Competitor" (Bananas with XGBoost Predictor)
-if RUN_BASELINES or RUN_ALL:
-    if SURROGATE == "xgboost":
-        run_experiment(
-            "bananas",
-            predictor_cls=CustomXGBoost,
-            predictor_kwargs={
-                "encoding_type": EncodingType.PATH, # Standard graph encoding
-                "ss_type": "nasbench201",
-                "hparams_from_file": False,
-                "nthread": 4,
-                "device": "cuda",
-                "tree_method": "hist"
-                # Hyperparams from NASLib Paper Table 2
-                # "max_depth": 6,
-                # "learning_rate": 0.3,
-            }
-        )
-    elif SURROGATE == "mlp":
-        run_experiment(
-            "bananas",
-            predictor_cls=CustomMLP,
-            predictor_kwargs={
-                "encoding_type": EncodingType.PATH, # Standard graph encoding
-                "ss_type": "nasbench201",
-                "num_layers": 3,
-                "layer_width": 128,
-                "batch_size": 32,
-                "lr": 0.001,
-                "epochs": 200, 
-                "loss": "mse"  # or 'mse'
-            }
-        )
+    # 2c. The "Competitor" (Bananas with XGBoost Predictor)
+    if RUN_BASELINES or RUN_ALL:
+        if SURROGATE == "xgboost":
+            run_experiment(
+                "bananas",
+                predictor_cls=CustomXGBoost,
+                predictor_kwargs={
+                    "encoding_type": EncodingType.PATH, # Standard graph encoding
+                    "ss_type": "nasbench201",
+                    "hparams_from_file": False,
+                    "nthread": 4,
+                    "device": "cuda",
+                    "tree_method": "hist"
+                    # Hyperparams from NASLib Paper Table 2
+                    # "max_depth": 6,
+                    # "learning_rate": 0.3,
+                }
+            )
+        elif SURROGATE == "mlp":
+            run_experiment(
+                "bananas",
+                predictor_cls=CustomMLP,
+                predictor_kwargs={
+                    "encoding_type": EncodingType.PATH, # Standard graph encoding
+                    "ss_type": "nasbench201",
+                    "num_layers": 3,
+                    "layer_width": 128,
+                    "batch_size": 32,
+                    "lr": 0.001,
+                    "epochs": 200, 
+                    "loss": "mse"  # or 'mse'
+                }
+            )
 
-# 3c. "Ours" (Bananas with LLM Embeddings + XGBoost Predictor)
-if not RUN_BASELINES or RUN_ALL:
-    if SURROGATE == "xgboost":
-        run_experiment(
-            "bananas",
-            predictor_cls=LLM_NB201_Predictor,
-            predictor_kwargs={
-                "base_predictor_cls": CustomXGBoost,
-                "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_embedded.csv',
-                "embedding_col": 'codellama_python_7b_pytorch_code_embedding',
-                "use_pca": True,
-                "pca_components": 128,
-                # Arguments for CustomXGBoost (passed via **kwargs)
-                "ss_type": "nasbench201",
-                "hparams_from_file": False,
-                "nthread": 4,
-                "device": "cuda",
-                "tree_method": "hist"
-            }
-        )
-    elif SURROGATE == "mlp":
-        run_experiment(
-            "bananas",
-            predictor_cls=LLM_NB201_Predictor,
-            predictor_kwargs={
-                "base_predictor_cls": CustomMLP,
-                "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_embedded.csv',
-                "embedding_col": 'codellama_python_7b_pytorch_code_embedding',
-                "use_pca": True,
-                "pca_components": 64,
-                # --- MLP Specific Hyperparams ---
-                "num_layers": 3,
-                "layer_width": 128,
-                "batch_size": 32,
-                "lr": 0.001,
-                "epochs": 200, 
-                "loss": "mse"  # or 'mse'
-            }
-        )
+    # 3c. "Ours" (Bananas with LLM Embeddings + XGBoost Predictor)
+    if not RUN_BASELINES or RUN_ALL:
+        if SURROGATE == "xgboost":
+            run_experiment(
+                "bananas",
+                predictor_cls=LLM_NB201_Predictor,
+                predictor_kwargs={
+                    "base_predictor_cls": CustomXGBoost,
+                    "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_embedded.csv',
+                    "embedding_col": 'codellama_python_7b_pytorch_code_embedding',
+                    "use_pca": False,
+                    "pca_components": 128,
+                    # Arguments for CustomXGBoost (passed via **kwargs)
+                    "ss_type": "nasbench201",
+                    "hparams_from_file": False,
+                    "nthread": 4,
+                    "device": "cuda",
+                    "tree_method": "hist"
+                }
+            )
+        elif SURROGATE == "mlp":
+            run_experiment(
+                "bananas",
+                predictor_cls=LLM_NB201_Predictor,
+                predictor_kwargs={
+                    "base_predictor_cls": CustomMLP,
+                    "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_embedded.csv',
+                    "embedding_col": 'codellama_python_7b_pytorch_code_embedding',
+                    "use_pca": True,
+                    "pca_components": 128,
+                    # --- MLP Specific Hyperparams ---
+                    "num_layers": 3,
+                    "layer_width": 128,
+                    "batch_size": 32,
+                    "lr": 0.001,
+                    "epochs": 200, 
+                    "loss": "mse"  # or 'mse'
+                }
+            )

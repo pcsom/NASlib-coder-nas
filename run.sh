@@ -2,7 +2,7 @@
 #SBATCH --job-name=codenas
 #SBATCH --nodes=1
 #SBATCH -c 20
-#SBATCH --time=5:00:00
+#SBATCH --time=16:00:00
 #SBATCH --mem=64G
 #SBATCH --output=slurm_logs/naslib201_%j.out
 
@@ -10,14 +10,16 @@
 SEED=${1:-242}
 RUN_BASELINES=${2:-false}
 SURROGATE=${3:-mlp}
+TRIALS=${4:-1}
 
 # echo each argument
 echo "SEED: $SEED"
 echo "RUN_BASELINES: $RUN_BASELINES"
 echo "SURROGATE: $SURROGATE"
+echo "TRIALS: $TRIALS"
 
 # Build the Python command
-PYTHON_CMD="python -u run_nb201_comparison.py --seed $SEED --surrogate $SURROGATE"
+PYTHON_CMD="python -u run_nb201_comparison.py --seed $SEED --surrogate $SURROGATE --trials $TRIALS"
 
 # Add --run_baselines flag if true
 if [ "$RUN_BASELINES" = "true" ]; then
