@@ -5,10 +5,10 @@ import os
 
 # --- Configuration ---
 # Update these paths to point to your actual 3 json files
-space = "nasbench201"
-seed = 412
+space = "nasbench301"
+seed = 1343
 dataset = "cifar10"
-surrogate = "mlp"
+surrogate = "xgboost"
 
 surrogate_name_map = {
     "xgboost": "CustomXGBoost",
@@ -21,6 +21,9 @@ if space == "nasbench201":
 elif space == "nasbench301":
     llm_pred = f"LLM_NB301_Predictor_{surrogate_name_map[surrogate]}_bananas"
     run = "run_nb301"
+elif space == "nasbench101":
+    llm_pred = f"LLM_NB101_Predictor_{surrogate_name_map[surrogate]}_bananas"
+    run = "run_nb101"
 
 surrogate_folder = f"{surrogate_name_map[surrogate]}_bananas"
 
