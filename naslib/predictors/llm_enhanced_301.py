@@ -110,14 +110,21 @@ class NB301Stringifier:
 
     def stringify(self, arch):
         try:
-            if isinstance(arch, Graph):
-                genotype = convert_naslib_to_genotype(arch)
+            # 1. PRIORITY: Check for explicit genotype accessor (Works with Hollow Patch)
+            if hasattr(arch, 'get_genotype'):
+                genotype = arch.get_genotype()
+            
+            # 2. Check if it's already a Genotype (named tuple)
             elif hasattr(arch, 'normal') and hasattr(arch, 'reduce'):
                 genotype = arch
-            elif hasattr(arch, 'get_genotype'):
-                genotype = arch.get_genotype()
+            
+            # 3. FALLBACK: Standard NASLib Graph conversion (Only for full, unpatched graphs)
+            elif isinstance(arch, Graph):
+                genotype = convert_naslib_to_genotype(arch)
+            
             else:
                 raise TypeError(f"Unknown architecture object type: {type(arch)}")
+                
         except Exception as e:
             print(f"[Stringifier Error] Could not convert {type(arch)} to Genotype.")
             raise e
@@ -126,7 +133,7 @@ class NB301Stringifier:
         normal_cell_def = self._stringify_cell_class(genotype.normal, "NormalCell", reduction=False)
         reduce_cell_def = self._stringify_cell_class(genotype.reduce, "ReductionCell", reduction=True)
 
-        full_code = ["import torch", "import torch.nn as nn", ""]
+        full_code = []
 
         # 2. Optionally include Primitives
         if self.include_primitives:
@@ -141,68 +148,73 @@ class NB301Stringifier:
         return "\n".join(full_code)
 
     def _stringify_cell_class(self, cell_ops, class_name, reduction):
-        edge_ops = {}
-        for edge_idx, (op_name, src_idx) in enumerate(cell_ops):
-            dst_node = 2 + (edge_idx // 2)
-            edge_ops[(src_idx, dst_node)] = op_name
+        # 1. PRE-PROCESS EDGES (Avoid Dictionary Collisions & Identify Zero/Identity)
+        processed_edges = []
+        for i, (op_name, src_idx) in enumerate(cell_ops):
+            dst_node = 2 + (i // 2)
+            stride = 2 if reduction and src_idx < 2 else 1
+            
+            # Smart Logic: 'zero' is cut. 'skip_connect' w/ stride 1 is identity.
+            is_zero = (op_name == 'zero') or (op_name == 'none')
+            is_identity = (op_name == 'skip_connect' and stride == 1)
+            
+            processed_edges.append({
+                'layer_name': f"edge_{i}_op", # Unique name for every edge
+                'op_name': op_name,
+                'src': src_idx,
+                'dst': dst_node,
+                'stride': stride,
+                'is_zero': is_zero,
+                'is_identity': is_identity
+            })
 
         lines = [f"class {class_name}(nn.Module):"]
         lines.append("    def __init__(self, in_channels, out_channels):")
         lines.append("        super().__init__()")
         
-        # Operations for intermediate nodes
-        # We need to track which edges are simple identities to skip defining a layer for them
-        identity_edges = [] 
-
-        for dst in range(2, 6):
-            for src in range(dst):
-                if (src, dst) in edge_ops:
-                    op = edge_ops[(src, dst)]
-                    if op == 'none': continue
-                    
-                    stride = 2 if reduction and src < 2 else 1
-                    
-                    # SMART IDENTITY CHECK:
-                    # If it's a skip connect with stride 1, it's a true Identity.
-                    # We don't define a layer for it.
-                    if op == 'skip_connect' and stride == 1:
-                        identity_edges.append((src, dst))
-                        continue
-
-                    # Otherwise, generate code
-                    if self.include_primitives:
-                        op_code = self._get_short_op_code(op, stride)
-                    else:
-                        op_code = self._get_descriptive_op_call(op, stride)
-                        
-                    lines.append(f"        self.op_{src}_{dst} = {op_code}")
+        # 2. GENERATE LAYERS
+        for edge in processed_edges:
+            if edge['is_zero'] or edge['is_identity']:
+                continue
+            
+            # Generate code for actual operations
+            if self.include_primitives:
+                op_code = self._get_short_op_code(edge['op_name'], edge['stride'])
+            else:
+                op_code = self._get_descriptive_op_call(edge['op_name'], edge['stride'])
+                
+            lines.append(f"        self.{edge['layer_name']} = {op_code}")
 
         lines.append("")
         lines.append("    def forward(self, s0, s1):")
         
-        concat_list = []
-        for dst in range(2, 6):
+        # 3. GENERATE FORWARD PASS
+        # Iterate through intermediate nodes (2, 3, 4, 5)
+        for node_idx in range(2, 6):
+            # NB301: Each node sums inputs from 2 specific edges
+            edge_a = processed_edges[(node_idx - 2) * 2]
+            edge_b = processed_edges[(node_idx - 2) * 2 + 1]
+            
             inputs = []
-            for src in range(dst):
-                if (src, dst) in edge_ops:
-                    op = edge_ops[(src, dst)]
-                    if op == 'none': continue
-                    
-                    # SMART IDENTITY USE:
-                    if (src, dst) in identity_edges:
-                        # Just pass the tensor directly!
-                        inputs.append('s0' if src==0 else 's1' if src==1 else f's{src}')
-                    else:
-                        # Call the defined layer
-                        inputs.append(f"self.op_{src}_{dst}({'s0' if src==0 else 's1' if src==1 else f's{src}'})")
+            for edge in [edge_a, edge_b]:
+                if edge['is_zero']:
+                    continue
+                
+                input_var = f"s{edge['src']}"
+                if edge['is_identity']:
+                    inputs.append(input_var)
+                else:
+                    inputs.append(f"self.{edge['layer_name']}({input_var})")
             
             if not inputs:
-                lines.append(f"        s{dst} = torch.zeros_like(s0)") 
+                # If both edges are zero/dead
+                lines.append(f"        s{node_idx} = torch.zeros_like(s0)")
             else:
-                lines.append(f"        s{dst} = {' + '.join(inputs)}")
-            concat_list.append(f"s{dst}")
+                lines.append(f"        s{node_idx} = {' + '.join(inputs)}")
 
-        lines.append(f"        return torch.cat([{', '.join(concat_list)}], dim=1)")
+        # NB301/DARTS concatenates the outputs of all intermediate nodes (2,3,4,5)
+        lines.append(f"        return torch.cat([s2, s3, s4, s5], dim=1)")
+        
         return "\n".join(lines)
 
     def _get_short_op_code(self, op_name, stride):
@@ -222,15 +234,15 @@ class NB301Stringifier:
         """Used when include_primitives=False"""
         if op_name == 'skip_connect':
             # Only hit if stride != 1
-            return "FactorizedReduce(in_channels=C, out_channels=C, stride=2)"
+            return "FactorizedReduce(in_channels, out_channels, stride=2)"
         elif op_name == 'sep_conv_3x3': 
-            return f"SeparableConv2d_BN_ReLU(in_channels=C, out_channels=C, kernel_size=3, stride={stride}, padding=1)"
+            return f"SeparableConv2d_BN_ReLU(in_channels, out_channels, kernel_size=3, stride={stride}, padding=1)"
         elif op_name == 'sep_conv_5x5': 
-            return f"SeparableConv2d_BN_ReLU(in_channels=C, out_channels=C, kernel_size=5, stride={stride}, padding=2)"
+            return f"SeparableConv2d_BN_ReLU(in_channels, out_channels, kernel_size=5, stride={stride}, padding=2)"
         elif op_name == 'dil_conv_3x3': 
-            return f"DilatedConv2d_BN_ReLU(in_channels=C, out_channels=C, kernel_size=3, stride={stride}, padding=2, dilation=2)"
+            return f"DilatedConv2d_BN_ReLU(in_channels, out_channels, kernel_size=3, stride={stride}, padding=2, dilation=2)"
         elif op_name == 'dil_conv_5x5': 
-            return f"DilatedConv2d_BN_ReLU(in_channels=C, out_channels=C, kernel_size=5, stride={stride}, padding=4, dilation=2)"
+            return f"DilatedConv2d_BN_ReLU(in_channels, out_channels, kernel_size=5, stride={stride}, padding=4, dilation=2)"
         elif op_name == 'max_pool_3x3': 
             return f"MaxPool2d(kernel_size=3, stride={stride}, padding=1)"
         elif op_name == 'avg_pool_3x3': 
