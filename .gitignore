@@ -136,7 +136,7 @@ data/
 *.obj
 *bohb_output
 logs/
-# run_*/
+run_*/
 final_eval*/
 
 # Swap

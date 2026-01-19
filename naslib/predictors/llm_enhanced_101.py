@@ -12,7 +12,6 @@ from sklearn.decomposition import PCA
 from transformers import AutoTokenizer, AutoModel
 
 # NASLib Utilities for 101
-from naslib.search_spaces.nasbench101.graph import ModelSpec as ModelSpec_101
 from naslib.search_spaces.core.graph import Graph
 
 logger = logging.getLogger(__name__)
@@ -28,7 +27,7 @@ def debug_log(msg):
         logger.debug(msg)
 
 # ==========================================
-# 1. THE SINGLETON MODEL HOLDER (Unchanged)
+# 1. THE SINGLETON MODEL HOLDER
 # ==========================================
 class CodeLlamaEmbedder:
     _instance = None
@@ -107,9 +106,14 @@ class CodeLlamaEmbedder:
 class NB101Stringifier:
     def __init__(self):
         # Maps internal NB101 labels to PyTorch code
+        # self.OP_MAP = {
+        #     'conv3x3-bn-relu': 'nn.Sequential(nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1, bias=False), nn.BatchNorm2d(16), nn.ReLU())',
+        #     'conv1x1-bn-relu': 'nn.Sequential(nn.Conv2d(16, 16, kernel_size=1, stride=1, padding=0, bias=False), nn.BatchNorm2d(16), nn.ReLU())',
+        #     'maxpool3x3': 'nn.MaxPool2d(kernel_size=3, stride=1, padding=1)',
+        # }
         self.OP_MAP = {
-            'conv3x3-bn-relu': 'nn.Sequential(nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1, bias=False), nn.BatchNorm2d(16), nn.ReLU())',
-            'conv1x1-bn-relu': 'nn.Sequential(nn.Conv2d(16, 16, kernel_size=1, stride=1, padding=0, bias=False), nn.BatchNorm2d(16), nn.ReLU())',
+            'conv3x3-bn-relu': 'Conv2d_BatchNorm_ReLU(kernel_size=3, stride=1, padding=1)',
+            'conv1x1-bn-relu': 'Conv2d_BatchNorm_ReLU(kernel_size=1, stride=1, padding=0)',
             'maxpool3x3': 'nn.MaxPool2d(kernel_size=3, stride=1, padding=1)',
         }
 
@@ -118,34 +122,39 @@ class NB101Stringifier:
         matrix, ops = None, None
         
         try:
-            # Case A: NASLib Graph object wrapping NB101 spec
-            if hasattr(arch, 'spec') and isinstance(arch.spec, ModelSpec_101):
-                matrix = arch.spec.matrix
-                ops = arch.spec.ops
-            # Case B: Direct ModelSpec object
-            elif isinstance(arch, ModelSpec_101):
-                matrix = arch.matrix
-                ops = arch.ops
+            # Case A: NASLib Graph object (Hollow or Standard)
+            if hasattr(arch, 'spec'):
+                if isinstance(arch.spec, dict):
+                    # Hollow Patch uses dict
+                    matrix = arch.spec['matrix']
+                    ops = arch.spec['ops']
+                else:
+                    # Standard NASLib uses ModelSpec object
+                    matrix = arch.spec.matrix
+                    ops = arch.spec.ops
+            
+            # Case B: Direct Dictionary (e.g. from dataset API)
+            elif isinstance(arch, dict) and 'matrix' in arch:
+                matrix = arch['matrix']
+                ops = arch['ops']
+                
             # Case C: Tuple/List (matrix, ops)
             elif isinstance(arch, (tuple, list)) and len(arch) == 2:
                 matrix, ops = arch
-            # Case D: NASLib Graph but needs conversion (rare fallback)
-            elif isinstance(arch, Graph):
-                # Try to access internal spec if stored differently or raise
-                if hasattr(arch, 'get_spec'):
-                     spec = arch.get_spec()
-                     matrix, ops = spec.matrix, spec.ops
-                else:
-                     raise ValueError("Could not extract matrix/ops from Graph")
+            
+            # Case D: Direct ModelSpec Object (Fallback for unpatched code)
+            elif hasattr(arch, 'matrix') and hasattr(arch, 'ops'):
+                matrix = arch.matrix
+                ops = arch.ops
+                
             else:
-                raise TypeError(f"Unknown architecture object type: {type(arch)}")
+                raise TypeError(f"Unknown NB101 architecture object type: {type(arch)}")
                 
         except Exception as e:
             print(f"[Stringifier Error] Could not convert {type(arch)} to (matrix, ops).")
-            print(f"Error details: {e}")
             raise e
 
-        # --- 2. GENERATE STRING (EXACT LOGIC PROVIDED) ---
+        # --- 2. GENERATE STRING ---
         return self._spec_to_pytorch_code(matrix, ops)
 
     def _get_op_string(self, op_label):
@@ -158,7 +167,8 @@ class NB101Stringifier:
         lines.append("class Cell(nn.Module):")
         lines.append("    def __init__(self, C_in, C_out, stride):")
         lines.append("        super().__init__()")
-        lines.append("        self.input_projection = nn.Sequential(nn.Conv2d(C_in, 16, kernel_size=1, bias=False), nn.BatchNorm2d(16), nn.ReLU())")
+        # lines.append("        self.input_projection = nn.Sequential(nn.Conv2d(C_in, 16, kernel_size=1, bias=False), nn.BatchNorm2d(16), nn.ReLU())")
+        lines.append("        self.input_projection = Conv2d_BatchNorm_ReLU(kernel_size=1, stride=1, padding=0)")
         
         for t in range(1, num_vertices - 1):
             op_label = ops[t]
@@ -221,17 +231,27 @@ class LLM_NB101_Predictor:
 
     def _get_hash_key(self, arch):
         """Helper to ensure consistent hashing for Read and Write"""
-        # For NB101, the unique identifier is the hash of the spec (matrix+ops)
         try:
-            if hasattr(arch, 'spec') and isinstance(arch.spec, ModelSpec_101):
-                # NASLib wrapper often pre-computes hash
-                return arch.spec.hash_spec(arch.spec.ops) if hasattr(arch.spec, 'hash_spec') else str(arch.spec.matrix) + str(arch.spec.ops)
-            elif isinstance(arch, ModelSpec_101):
-                return arch.hash_spec(arch.ops)
-            elif isinstance(arch, (tuple, list)):
-                return str(arch) # Fallback for raw tuples
-            else:
-                return str(arch)
+            # 1. Check if it's a NASLib Graph (Patched or Standard)
+            if hasattr(arch, 'spec'):
+                if isinstance(arch.spec, dict):
+                    # Fast hash for Hollow Patch dicts
+                    # Convert numpy matrix to string for hashing
+                    m_str = np.array2string(arch.spec['matrix'], separator=',')
+                    o_str = str(arch.spec['ops'])
+                    return m_str + o_str
+                elif hasattr(arch.spec, 'hash_spec'):
+                    # Standard ModelSpec object
+                    return arch.spec.hash_spec(arch.spec.ops)
+            
+            # 2. Check if it's a raw Dict
+            if isinstance(arch, dict) and 'matrix' in arch:
+                m_str = np.array2string(arch['matrix'], separator=',')
+                o_str = str(arch['ops'])
+                return m_str + o_str
+
+            # 3. Fallback
+            return str(arch)
         except Exception:
             return str(arch)
 
