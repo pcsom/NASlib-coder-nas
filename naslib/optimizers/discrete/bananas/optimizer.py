@@ -3,6 +3,7 @@ import logging
 import torch
 import copy
 import numpy as np
+from scipy.stats import kendalltau
 
 from naslib.optimizers.core.metaclasses import MetaOptimizer
 from naslib.optimizers.discrete.bananas.acquisition_functions import (

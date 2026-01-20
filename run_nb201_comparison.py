@@ -44,6 +44,7 @@ from naslib.optimizers.discrete.bananas import optimizer as bananas_opt
 from naslib.optimizers.discrete.bananas import acquisition_functions as acq_funcs
 
 import matplotlib.pyplot as plt
+import json
 
 # Store custom args for use later in the script
 args = custom_args
@@ -460,8 +461,34 @@ for i in range(NUM_TRIALS):
         # Retrieve the stored metrics
         if hasattr(optimizer, 'surrogate_test_metrics') and len(optimizer.surrogate_test_metrics) > 0:
             metrics = optimizer.surrogate_test_metrics
-            epochs = range(len(metrics))
+            epochs = list(range(len(metrics)))
 
+            # Save metrics to JSON file for later analysis
+            # Create a unique experiment identifier
+            predictor_type = p_name if p_name != "LLM_NB201_Predictor" else f"LLM_{predictor_kwargs['base_predictor_cls'].__name__}"
+            experiment_id = f"{predictor_type}_{optimizer_name}"
+            
+            metrics_data = {
+                'experiment_id': experiment_id,
+                'optimizer_type': optimizer_name,
+                'predictor_class': p_name,
+                'base_predictor': predictor_kwargs.get('base_predictor_cls').__name__ if p_name == "LLM_NB201_Predictor" else None,
+                'surrogate_type': SURROGATE,
+                'uses_llm': p_name == "LLM_NB201_Predictor",
+                'dataset': config.dataset,
+                'seed': config.search.seed,
+                'trial': i,
+                'epochs': epochs,
+                'kendall_tau': metrics,
+                'config_str': config.optimizer
+            }
+            
+            metrics_path = os.path.join(config.save, f"surrogate_metrics_trial_{i}_seed_{config.search.seed}.json")
+            with open(metrics_path, 'w') as f:
+                json.dump(metrics_data, f, indent=2)
+            print(f"Surrogate metrics saved to {metrics_path}")
+
+            # Plot individual trial
             plt.figure(figsize=(10, 6))
             plt.plot(epochs, metrics, marker='o', linestyle='-', color='b', label='Kendall Tau')
             plt.title(f'Surrogate Generalization on Test Set ({config.optimizer})')
@@ -471,7 +498,7 @@ for i in range(NUM_TRIALS):
             plt.legend()
             
             # Save the plot
-            plot_path = os.path.join(config.save, f"surrogate_test_accuracy_seed_{config.search.seed}.png")
+            plot_path = os.path.join(config.save, f"surrogate_test_accuracy_trial_{i}_seed_{config.search.seed}.png")
             plt.savefig(plot_path)
             print(f"Surrogate accuracy plot saved to {plot_path}")
             plt.close()
