@@ -3,6 +3,7 @@ import logging
 import torch
 import copy
 import numpy as np
+from scipy.stats import kendalltau
 
 from naslib.optimizers.core.metaclasses import MetaOptimizer
 from naslib.optimizers.discrete.bananas.acquisition_functions import (
@@ -18,7 +19,11 @@ from naslib.search_spaces.core.query_metrics import Metric
 from naslib.utils import AttrDict, count_parameters_in_MB, get_train_val_loaders
 from naslib.utils.log import log_every_n_seconds
 
+# for the test set caching and kendall tau calculation
+import pickle
+import os
 
+from search_spaces.nasbench201.conversions import convert_op_indices_to_naslib, convert_naslib_to_str, convert_str_to_op_indices, convert_naslib_to_op_indices
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +56,12 @@ class Bananas(MetaOptimizer):
         self.next_batch = []
         self.history = torch.nn.ModuleList()
 
+        self.test_size = 200
+        self.test_data = []
+        self.test_accuracies = []
+        self.test_hashes = set()  # Store hashes of test architectures to avoid sampling them
+        self.surrogate_test_metrics = [] # store KT over time
+
         self.zc = config.search.zc if hasattr(config.search, 'zc') else None
         self.semi = "semi" in self.predictor_type 
         self.zc_api = zc_api
@@ -78,6 +89,63 @@ class Bananas(MetaOptimizer):
                 self.config, mode="train")
         if self.semi:
             self.unlabeled = []
+        
+        # Create a unique filename for this search space + dataset combo
+        cache_filename = f"fixed_test_set_{self.search_space.get_type()}_{self.dataset}.pkl"
+
+        if os.path.exists(cache_filename):
+            print(f"Loading fixed test set from cache: {cache_filename}")
+            try:
+                with open(cache_filename, 'rb') as f:
+                    arch_op_indices, self.test_accuracies = pickle.load(f)
+                self.test_data = []
+                self.test_hashes = set()
+                for op_indices in arch_op_indices:
+                    arch = self.search_space.clone()
+                    # For hollow architectures, just set op_indices directly
+                    if hasattr(arch, 'instantiate_model') and not arch.instantiate_model:
+                        arch.op_indices = op_indices
+                    else:
+                        convert_op_indices_to_naslib(op_indices, arch)
+                    self.test_data.append(arch)
+                    self.test_hashes.add(arch.get_hash())
+            except Exception as e:
+                print(f"Failed to load cache ({e}), regenerating...")
+                self.test_data = [] # Trigger regeneration below
+        else:
+            # Initialize lists if cache didn't exist
+            self.test_data = []
+
+        # Generate if we didn't load successfully
+        if not self.test_data:
+            print(f"Generating new fixed test set ({self.test_size} samples)...")
+            self.test_accuracies = []
+            self.test_hashes = set()
+            
+            for _ in range(self.test_size):
+                arch = self.search_space.clone()
+                arch.sample_random_architecture(dataset_api=self.dataset_api)
+                
+                # Parse the architecture if needed (required for query and conversions)
+                if self.search_space.instantiate_model == True:
+                    arch.parse()
+                
+                # Query ground truth
+                acc = arch.query(self.performance_metric, self.dataset, dataset_api=self.dataset_api)
+                print(f"Generated test architecture with {self.performance_metric}: {acc:.4f}") 
+                self.test_data.append(arch)
+                self.test_accuracies.append(acc)
+                self.test_hashes.add(arch.get_hash())
+
+            # Save to cache for next time
+            print(f"Saving fixed test set to {cache_filename}")
+            with open(cache_filename, 'wb') as f:
+                arch_op_indices = []
+                for arch in self.test_data:
+                    arch_op_indices.append(arch.get_op_indices())
+                pickle.dump((arch_op_indices, self.test_accuracies), f)
+        
+        print(f'[Bananas Optimizer] Test set generation complete.')
 
     def get_zero_cost_predictors(self):
         return {zc_name: ZeroCost(method_type=zc_name) for zc_name in self.zc_names}
@@ -119,15 +187,29 @@ class Bananas(MetaOptimizer):
         self._update_history(model)
 
     def _sample_new_model(self):
-        model = torch.nn.Module()
-        model.arch = self.search_space.clone()
-        model.arch.sample_random_architecture(
-            dataset_api=self.dataset_api, load_labeled=self.load_labeled)
-        model.arch_hash = model.arch.get_hash()
+        max_retries = 500  # Prevent infinite loops
+        retries = 0
         
+        while retries < max_retries:
+            model = torch.nn.Module()
+            model.arch = self.search_space.clone()
+            model.arch.sample_random_architecture(
+                dataset_api=self.dataset_api, load_labeled=self.load_labeled)
+            model.arch_hash = model.arch.get_hash()
+            
+            # Check if this architecture is in the test set
+            if model.arch_hash not in self.test_hashes:
+                if self.search_space.instantiate_model == True:
+                    model.arch.parse()
+                return model
+            
+            retries += 1
+        
+        # If we've exhausted retries, log a warning and return anyway
+        # This should be extremely rare in large search spaces
+        logger.warning(f"Could not sample architecture outside test set after {max_retries} attempts. Returning anyway.")
         if self.search_space.instantiate_model == True:
             model.arch.parse()
-
         return model
 
     def _get_train(self):
@@ -224,6 +306,16 @@ class Bananas(MetaOptimizer):
 
                 ensemble.fit(xtrain, ytrain)
 
+                # Predict scores for the test set
+                pred_scores = ensemble.query(self.test_data)
+                
+                # Calculate Kendall Tau (Ranking Correlation)
+                tau, _ = kendalltau(self.test_accuracies, pred_scores)
+                
+                # Log the metric
+                self.surrogate_test_metrics.append(tau)
+                logger.info(f"Epoch {epoch}: Surrogate Test Kendall Tau = {tau:.4f}")
+                # -----------------------------------------------
                 # define an acquisition function
                 acq_fn = acquisition_function(
                     ensemble=ensemble, ytrain=ytrain, acq_fn_type=self.acq_fn_type

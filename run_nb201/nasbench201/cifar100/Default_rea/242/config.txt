@@ -1,4 +1,4 @@
-data: /storage/ice1/5/6/psomu3/codenas/NASLib/naslib/data
+data: /storage/ice1/3/5/abb32/NASlib-coder-nas/naslib/data
 dataset: cifar100
 debug_predictor: True
 eval_only: False
@@ -46,19 +46,19 @@ search:
   debug_predictor: False
   drop_path_prob: 0.0
   encoding_type: path
-  epochs: 410
+  epochs: 820
   fidelity: 200
   gpu: None
   grad_clip: 5
-  k: 5
+  k: 20
   learning_rate: 0.025
   learning_rate_min: 0.001
-  max_mutations: 2
+  max_mutations: 1
   momentum: 0.9
-  num_arches_to_mutate: 6
-  num_candidates: 2000
+  num_arches_to_mutate: 20
+  num_candidates: 200
   num_ensemble: 3
-  num_init: 10
+  num_init: 20
   output_weights: True
   population_size: 100
   predictor_type: var_sparse_gp

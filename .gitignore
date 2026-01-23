@@ -157,3 +157,5 @@ tags
 # individual configs
 configs/bananas500/*
 configs/npenas500/*
+
+run_gpu.sh
