@@ -59,6 +59,7 @@ class Bananas(MetaOptimizer):
         self.test_size = 200
         self.test_data = []
         self.test_accuracies = []
+        self.test_hashes = set()  # Store hashes of test architectures to avoid sampling them
         self.surrogate_test_metrics = [] # store KT over time
 
         self.zc = config.search.zc if hasattr(config.search, 'zc') else None
@@ -98,6 +99,7 @@ class Bananas(MetaOptimizer):
                 with open(cache_filename, 'rb') as f:
                     arch_op_indices, self.test_accuracies = pickle.load(f)
                 self.test_data = []
+                self.test_hashes = set()
                 for op_indices in arch_op_indices:
                     arch = self.search_space.clone()
                     # For hollow architectures, just set op_indices directly
@@ -106,6 +108,7 @@ class Bananas(MetaOptimizer):
                     else:
                         convert_op_indices_to_naslib(op_indices, arch)
                     self.test_data.append(arch)
+                    self.test_hashes.add(arch.get_hash())
             except Exception as e:
                 print(f"Failed to load cache ({e}), regenerating...")
                 self.test_data = [] # Trigger regeneration below
@@ -117,6 +120,7 @@ class Bananas(MetaOptimizer):
         if not self.test_data:
             print(f"Generating new fixed test set ({self.test_size} samples)...")
             self.test_accuracies = []
+            self.test_hashes = set()
             
             for _ in range(self.test_size):
                 arch = self.search_space.clone()
@@ -131,6 +135,7 @@ class Bananas(MetaOptimizer):
                 print(f"Generated test architecture with {self.performance_metric}: {acc:.4f}") 
                 self.test_data.append(arch)
                 self.test_accuracies.append(acc)
+                self.test_hashes.add(arch.get_hash())
 
             # Save to cache for next time
             print(f"Saving fixed test set to {cache_filename}")
@@ -182,15 +187,29 @@ class Bananas(MetaOptimizer):
         self._update_history(model)
 
     def _sample_new_model(self):
-        model = torch.nn.Module()
-        model.arch = self.search_space.clone()
-        model.arch.sample_random_architecture(
-            dataset_api=self.dataset_api, load_labeled=self.load_labeled)
-        model.arch_hash = model.arch.get_hash()
+        max_retries = 500  # Prevent infinite loops
+        retries = 0
         
+        while retries < max_retries:
+            model = torch.nn.Module()
+            model.arch = self.search_space.clone()
+            model.arch.sample_random_architecture(
+                dataset_api=self.dataset_api, load_labeled=self.load_labeled)
+            model.arch_hash = model.arch.get_hash()
+            
+            # Check if this architecture is in the test set
+            if model.arch_hash not in self.test_hashes:
+                if self.search_space.instantiate_model == True:
+                    model.arch.parse()
+                return model
+            
+            retries += 1
+        
+        # If we've exhausted retries, log a warning and return anyway
+        # This should be extremely rare in large search spaces
+        logger.warning(f"Could not sample architecture outside test set after {max_retries} attempts. Returning anyway.")
         if self.search_space.instantiate_model == True:
             model.arch.parse()
-
         return model
 
     def _get_train(self):
