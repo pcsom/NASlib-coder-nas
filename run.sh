@@ -6,6 +6,8 @@
 #SBATCH --mem=64G
 #SBATCH --output=slurm_logs/naslib201_%j.out
 
+export HF_HOME=/storage/ice-shared/vip-vvk/data/AOT/$USER/huggingface
+
 # Accept arguments with defaults
 SEED=${1:-242}
 RUN_BASELINES=${2:-false}
