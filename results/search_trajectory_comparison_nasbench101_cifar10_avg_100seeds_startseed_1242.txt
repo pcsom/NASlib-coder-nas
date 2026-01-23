@@ -1,0 +1,7 @@
+=== Average Pairwise Differences (% Validation Accuracy) ===
+Cumulative: Bananas (Default) - REA (Default): +0.064%
+Best individual: Bananas (Default) - REA (Default): +0.062%
+Cumulative: Bananas + LLM (Ours) - REA (Default): +0.083%
+Best individual: Bananas + LLM (Ours) - REA (Default): +0.067%
+Cumulative: Bananas + LLM (Ours) - Bananas (Default): +0.019%
+Best individual: Bananas + LLM (Ours) - Bananas (Default): +0.005%
