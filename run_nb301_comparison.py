@@ -43,6 +43,9 @@ from naslib.predictors.mlp import MLPPredictor
 from naslib.optimizers.discrete.bananas import optimizer as bananas_opt
 from naslib.optimizers.discrete.bananas import acquisition_functions as acq_funcs
 
+import matplotlib.pyplot as plt
+import json
+
 # Store custom args for use later in the script
 args = custom_args
 
@@ -134,13 +137,13 @@ config.search.seed = args.seed
 config.seed = args.seed
 config.save_arch_weights = False
 config.search.num_init = 20
-config.search.k = 5
-config.search.epochs = 30*config.search.k + config.search.num_init
-config.search.num_candidates = 500
+config.search.k = 10
+config.search.epochs = 48*config.search.k + config.search.num_init
+config.search.num_candidates = 200
 config.out_dir = "run_nb301"
 config.debug_predictor = True
 config.search.num_ensemble = 3
-config.search.num_arches_to_mutate = 10
+config.search.num_arches_to_mutate = 12
 config.search.max_mutations = 1
 config.search.checkpoint_freq = 10000
 
@@ -292,6 +295,8 @@ print("Monkey-patched Bananas.new_epoch for profiling.")
 
 PATCH = False
 print("PATCH =", PATCH)
+PRIMITIVE_PATCH = True
+print("PRIMITIVE_PATCH =", PRIMITIVE_PATCH)
 
 if PATCH:
     # =============================================================================
@@ -405,6 +410,74 @@ if PATCH:
 
 
 
+if PRIMITIVE_PATCH:
+    # =============================================================================
+    # MINIMAL PATCH: FAST PRIMITIVES FOR NAS-BENCH-301
+    # =============================================================================
+    # This replaces the initialization of heavy primitives with lightweight versions
+    # that skip PyTorch layer creation. This speeds up graph candidate generation 
+    # by ~10-50x without breaking the logic required for hashing/querying.
+
+    try:
+        import naslib.search_spaces.core.primitives as core_ops
+        import naslib.search_spaces.nasbench301.primitives as nb301_ops
+
+        print("[Patching] Applying Primitive-Only Patch for NAS-Bench-301...")
+
+        # 1. Define Fast Init Methods
+        # We directly call AbstractPrimitive.__init__ to register the object 
+        # as a valid module, but we SKIP the heavy logic (self.op = nn.Sequential...)
+        # We MUST capture attributes (kernel_size, stride, etc) so get_op_name works.
+
+        def fast_sep_conv_init(self, C_in, C_out, kernel_size, stride, padding, affine=True, **kwargs):
+            core_ops.AbstractPrimitive.__init__(self, locals())
+            self.kernel_size = kernel_size
+            self.C_in = C_in; self.C_out = C_out; self.stride = stride
+
+        def fast_dil_conv_init(self, C_in, C_out, kernel_size, stride, padding, dilation, affine=True, **kwargs):
+            core_ops.AbstractPrimitive.__init__(self, locals())
+            self.kernel_size = kernel_size
+            self.C_in = C_in; self.C_out = C_out; self.stride = stride; self.dilation = dilation
+
+        def fast_factorized_reduce_init(self, C_in, C_out, stride=1, affine=True, **kwargs):
+            # Note: FactorizedReduce usually lives in nb301_ops
+            core_ops.AbstractPrimitive.__init__(self, locals())
+            self.C_in = C_in; self.C_out = C_out; self.stride = stride
+
+        def fast_pool_init(self, C_in, kernel_size, stride, use_bn=True, **kwargs):
+            # Handles both MaxPool and AvgPool
+            core_ops.AbstractPrimitive.__init__(self, locals())
+            self.kernel_size = kernel_size
+            self.stride = stride
+
+        def fast_conv_bn_relu_init(self, C_in, C_out, kernel_size, stride=1, affine=True, **kwargs):
+            # Used in InputProjection and others
+            core_ops.AbstractPrimitive.__init__(self, locals())
+            self.kernel_size = kernel_size
+            self.stride = stride
+
+        # 2. Apply Surgery (In-Place Replacement)
+        # This affects all future instantiations of NasBench301SearchSpace
+        core_ops.SepConv.__init__ = fast_sep_conv_init
+        core_ops.DilConv.__init__ = fast_dil_conv_init
+        core_ops.MaxPool.__init__ = fast_pool_init
+        core_ops.AvgPool.__init__ = fast_pool_init
+        core_ops.ConvBnReLU.__init__ = fast_conv_bn_relu_init
+        
+        # NB301 specific primitives
+        if hasattr(nb301_ops, 'FactorizedReduce'):
+            nb301_ops.FactorizedReduce.__init__ = fast_factorized_reduce_init
+
+        print("[Patching] NAS-Bench-301 Primitives are now lightweight.")
+
+    except ImportError as e:
+        print(f"[Patching] Skipped NB301 patching (Import Error): {e}")
+    except Exception as e:
+        print(f"[Patching] Failed to patch NB301: {e}")
+
+
+
+
 for i in range(NUM_TRIALS):
     print(f"\n\n=== TRIAL {i+1}/{NUM_TRIALS} ===")
     config.search.seed = args.seed*(i+1)
@@ -467,6 +540,73 @@ for i in range(NUM_TRIALS):
         write_config_to_file()
         trainer = Trainer(optimizer, config, lightweight_output=True)
         trainer.search() 
+
+
+        # Access the optimizer instance from the trainer
+        optimizer = trainer.optimizer
+
+        # Retrieve the stored metrics
+        if hasattr(optimizer, 'surrogate_test_metrics') and len(optimizer.surrogate_test_metrics) > 0:
+            metrics_tau = optimizer.surrogate_test_metrics
+            metrics_mse = optimizer.surrogate_test_metrics_mse if hasattr(optimizer, 'surrogate_test_metrics_mse') else []
+            epochs = list(range(len(metrics_tau)))
+
+            # Save metrics to JSON file for later analysis
+            # Create a unique experiment identifier
+            predictor_type = p_name if p_name != "LLM_NB301_Predictor" else f"LLM_{predictor_kwargs['base_predictor_cls'].__name__}"
+            experiment_id = f"{predictor_type}_{optimizer_name}"
+            
+            metrics_data = {
+                'experiment_id': experiment_id,
+                'optimizer_type': optimizer_name,
+                'predictor_class': p_name,
+                'base_predictor': predictor_kwargs.get('base_predictor_cls').__name__ if p_name == "LLM_NB301_Predictor" else None,
+                'surrogate_type': SURROGATE,
+                'uses_llm': p_name == "LLM_NB301_Predictor",
+                'dataset': config.dataset,
+                'seed': config.search.seed,
+                'trial': i,
+                'epochs': epochs,
+                'kendall_tau': metrics_tau,
+                'mse': metrics_mse,
+                'config_str': config.optimizer
+            }
+            
+            metrics_path = os.path.join(config.save, f"surrogate_metrics_trial_{i}_seed_{config.search.seed}.json")
+            with open(metrics_path, 'w') as f:
+                json.dump(metrics_data, f, indent=2)
+            print(f"Surrogate metrics saved to {metrics_path}")
+
+            # Plot individual trial with dual panels
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
+            
+            # Plot Kendall Tau
+            ax1.plot(epochs, metrics_tau, marker='o', linestyle='-', color='b', label='Kendall Tau')
+            ax1.set_title(f'Surrogate Kendall Tau on Test Set ({config.optimizer})')
+            ax1.set_xlabel('Search Iterations (Model Updates)')
+            ax1.set_ylabel('Kendall Tau')
+            ax1.grid(True)
+            ax1.legend()
+            
+            # Plot MSE (if available)
+            if metrics_mse:
+                ax2.plot(epochs, metrics_mse, marker='s', linestyle='-', color='r', label='MSE')
+                ax2.set_title(f'Surrogate MSE on Test Set ({config.optimizer})')
+                ax2.set_xlabel('Search Iterations (Model Updates)')
+                ax2.set_ylabel('MSE')
+                ax2.grid(True)
+                ax2.legend()
+            else:
+                ax2.text(0.5, 0.5, 'MSE data not available', 
+                        ha='center', va='center', transform=ax2.transAxes)
+            
+            plt.tight_layout()
+            
+            # Save the plot
+            plot_path = os.path.join(config.save, f"surrogate_test_metrics_trial_{i}_seed_{config.search.seed}.png")
+            plt.savefig(plot_path)
+            print(f"Surrogate metrics plot saved to {plot_path}")
+            plt.close()
         
         return trainer.optimizer.history
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=codenas
 #SBATCH --nodes=1
-#SBATCH -c 20
+#SBATCH -c 12
 #SBATCH --time=16:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
@@ -31,4 +31,4 @@ fi
 
 nvidia-smi
 module load anaconda3/2023.03
-conda run -n mvenv --no-capture-output $PYTHON_CMD
+conda run -n naslib39v2 --no-capture-output $PYTHON_CMD

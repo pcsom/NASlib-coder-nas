@@ -7,12 +7,13 @@ os.environ["OPENBLAS_NUM_THREADS"] = "4"
 import torch
 import numpy as np
 import logging
-from scipy.stats import norm
+from scipy.stats import norm, kendalltau
 import sys
 import time
 import types
 import copy
 import argparse
+import pandas as pd
 
 # --- PARSE CUSTOM ARGUMENTS FIRST (before any NASLib imports) ---
 parser = argparse.ArgumentParser(add_help=False)
@@ -42,6 +43,9 @@ from naslib.predictors.mlp import MLPPredictor
 
 from naslib.optimizers.discrete.bananas import optimizer as bananas_opt
 from naslib.optimizers.discrete.bananas import acquisition_functions as acq_funcs
+
+import matplotlib.pyplot as plt
+import json
 
 # Store custom args for use later in the script
 args = custom_args
@@ -134,13 +138,13 @@ config.search.seed = args.seed
 config.seed = args.seed
 config.save_arch_weights = False
 config.search.num_init = 20
-config.search.k = 5
-config.search.epochs = 40*config.search.k + config.search.num_init
+config.search.k = 10
+config.search.epochs = 500
 config.search.num_candidates = 500
 config.out_dir = "run_nb101"
 config.debug_predictor = True
 config.search.num_ensemble = 3
-config.search.num_arches_to_mutate = 10
+config.search.num_arches_to_mutate = 15
 config.search.max_mutations = 1
 config.search.checkpoint_freq = 10000
 
@@ -251,17 +255,17 @@ def debug_new_epoch(self, epoch):
             print("[Debug] Starting Fit...")
             t0 = time.time()
             xtrain, ytrain = self._get_train()
-            ensemble = self._get_ensemble()
+            self.ensemble = self._get_ensemble()
             
             # Setup semi-supervised if needed (omitted for brevity as self.semi usually False)
             
-            ensemble.fit(xtrain, ytrain)
+            self.ensemble.fit(xtrain, ytrain)
             t1 = time.time()
             print(f"[Debug] Fit finished in {t1-t0:.2f}s")
 
             # 2. Acquisition Setup
             acq_fn = bananas_opt.acquisition_function(
-                ensemble=ensemble, ytrain=ytrain, acq_fn_type=self.acq_fn_type
+                ensemble=self.ensemble, ytrain=ytrain, acq_fn_type=self.acq_fn_type
             )
 
             # 3. Candidate Generation
@@ -276,6 +280,22 @@ def debug_new_epoch(self, epoch):
             self.next_batch = self._get_best_candidates(candidates, acq_fn)
             t4 = time.time()
             print(f"[Debug] Selection finished in {t4-t3:.2f}s")
+            
+            # Compute Kendall Tau on test set (only when ensemble is retrained)
+            pred_scores = self.ensemble.query(self.test_data)  # Shape: (num_ensemble, num_test)
+            # Aggregate ensemble predictions by taking mean across ensemble members
+            mean_pred_scores = np.mean(pred_scores, axis=0)  # Shape: (num_test,)
+            
+            # Calculate Kendall Tau (Ranking Correlation)
+            tau, _ = kendalltau(self.test_accuracies, mean_pred_scores)
+            
+            # Calculate MSE (Mean Squared Error)
+            mse = np.mean((np.array(self.test_accuracies) - mean_pred_scores) ** 2)
+            
+            # Log the metrics
+            self.surrogate_test_metrics.append(tau)
+            self.surrogate_test_metrics_mse.append(mse)
+            print(f"Epoch {epoch}: Surrogate Test Kendall Tau = {tau:.4f}, MSE = {mse:.6f}")
 
         # 5. Evaluation
         print(f"[Debug] Evaluating architecture {len(self.next_batch)}...")
@@ -468,9 +488,75 @@ for i in range(NUM_TRIALS):
         create_exp_dir(config.save + "/eval")
         write_config_to_file()
         trainer = Trainer(optimizer, config, lightweight_output=True)
-        trainer.search() 
+        trainer.search()
         
-        return trainer.optimizer.history
+        # Access the optimizer instance from the trainer
+        optimizer = trainer.optimizer
+
+        # Retrieve the stored metrics
+        if hasattr(optimizer, 'surrogate_test_metrics') and len(optimizer.surrogate_test_metrics) > 0:
+            metrics_tau = optimizer.surrogate_test_metrics
+            metrics_mse = optimizer.surrogate_test_metrics_mse if hasattr(optimizer, 'surrogate_test_metrics_mse') else []
+            epochs = list(range(len(metrics_tau)))
+
+            # Save metrics to JSON file for later analysis
+            # Create a unique experiment identifier
+            predictor_type = p_name if p_name != "LLM_NB101_Predictor" else f"LLM_{predictor_kwargs['base_predictor_cls'].__name__}"
+            experiment_id = f"{predictor_type}_{optimizer_name}"
+            
+            metrics_data = {
+                'experiment_id': experiment_id,
+                'optimizer_type': optimizer_name,
+                'predictor_class': p_name,
+                'base_predictor': predictor_kwargs.get('base_predictor_cls').__name__ if p_name == "LLM_NB101_Predictor" else None,
+                'surrogate_type': SURROGATE,
+                'uses_llm': p_name == "LLM_NB101_Predictor",
+                'dataset': config.dataset,
+                'seed': config.search.seed,
+                'trial': i,
+                'epochs': epochs,
+                'kendall_tau': metrics_tau,
+                'mse': metrics_mse,
+                'config_str': config.optimizer
+            }
+            
+            metrics_path = os.path.join(config.save, f"surrogate_metrics_trial_{i}_seed_{config.search.seed}.json")
+            with open(metrics_path, 'w') as f:
+                json.dump(metrics_data, f, indent=2)
+            print(f"Surrogate metrics saved to {metrics_path}")
+
+            # Plot individual trial with dual panels
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
+            
+            # Plot Kendall Tau
+            ax1.plot(epochs, metrics_tau, marker='o', linestyle='-', color='b', label='Kendall Tau')
+            ax1.set_title(f'Surrogate Kendall Tau on Test Set ({config.optimizer})')
+            ax1.set_xlabel('Search Iterations (Model Updates)')
+            ax1.set_ylabel('Kendall Tau')
+            ax1.grid(True)
+            ax1.legend()
+            
+            # Plot MSE (if available)
+            if metrics_mse:
+                ax2.plot(epochs, metrics_mse, marker='s', linestyle='-', color='r', label='MSE')
+                ax2.set_title(f'Surrogate MSE on Test Set ({config.optimizer})')
+                ax2.set_xlabel('Search Iterations (Model Updates)')
+                ax2.set_ylabel('MSE')
+                ax2.grid(True)
+                ax2.legend()
+            else:
+                ax2.text(0.5, 0.5, 'MSE data not available', 
+                        ha='center', va='center', transform=ax2.transAxes)
+            
+            plt.tight_layout()
+            
+            # Save the plot
+            plot_path = os.path.join(config.save, f"surrogate_test_metrics_trial_{i}_seed_{config.search.seed}.png")
+            plt.savefig(plot_path)
+            print(f"Surrogate metrics plot saved to {plot_path}")
+            plt.close()
+    
+            return trainer.optimizer.history
 
 
 

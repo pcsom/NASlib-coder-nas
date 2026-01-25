@@ -169,8 +169,16 @@ class NB301Stringifier:
             })
 
         lines = [f"class {class_name}(nn.Module):"]
-        lines.append("    def __init__(self, in_channels, out_channels):")
+        lines.append("    def __init__(self, channels):")
         lines.append("        super().__init__()")
+
+        if reduction:
+            c_in = "channels // 2"
+        else:
+            c_in = "channels"
+
+        lines.append(f"        self.preprocess0 = ReLU_Conv2d_BatchNorm({c_in}, channels, 1, 1, 0, affine=False)")
+        lines.append(f"        self.preprocess1 = ReLU_Conv2d_BatchNorm({c_in}, channels, 1, 1, 0, affine=False)")
         
         # 2. GENERATE LAYERS
         for edge in processed_edges:
@@ -187,6 +195,8 @@ class NB301Stringifier:
 
         lines.append("")
         lines.append("    def forward(self, s0, s1):")
+        lines.append("        s0 = self.preprocess0(s0)")
+        lines.append("        s1 = self.preprocess1(s1)")
         
         # 3. GENERATE FORWARD PASS
         # Iterate through intermediate nodes (2, 3, 4, 5)
@@ -221,28 +231,28 @@ class NB301Stringifier:
         """Used when include_primitives=True"""
         if op_name == 'skip_connect':
             # This branch only hit if stride != 1 (FactorizedReduce)
-            return "FactorizedReduce(C_in, C_out)" 
-        elif op_name == 'sep_conv_3x3': return f"SepConv(C_in, C_out, 3, {stride}, 1)"
-        elif op_name == 'sep_conv_5x5': return f"SepConv(C_in, C_out, 5, {stride}, 2)"
-        elif op_name == 'dil_conv_3x3': return f"DilConv(C_in, C_out, 3, {stride}, 2, 2)"
-        elif op_name == 'dil_conv_5x5': return f"DilConv(C_in, C_out, 5, {stride}, 4, 2)"
+            return "FactorizedReduce(channels)" 
+        elif op_name == 'sep_conv_3x3': return f"SepConv(channels, 3, {stride}, 1)"
+        elif op_name == 'sep_conv_5x5': return f"SepConv(channels, 5, {stride}, 2)"
+        elif op_name == 'dil_conv_3x3': return f"DilConv(channels, 3, {stride}, 2, 2)"
+        elif op_name == 'dil_conv_5x5': return f"DilConv(channels, 5, {stride}, 4, 2)"
         elif op_name == 'max_pool_3x3': return f"nn.MaxPool2d(3, stride={stride}, padding=1)"
         elif op_name == 'avg_pool_3x3': return f"nn.AvgPool2d(3, stride={stride}, padding=1, count_include_pad=False)"
-        return "Identity()"
+        return "Zero()"
 
     def _get_descriptive_op_call(self, op_name, stride):
         """Used when include_primitives=False"""
         if op_name == 'skip_connect':
             # Only hit if stride != 1
-            return "FactorizedReduce(in_channels, out_channels, stride=2)"
+            return "FactorizedReduce(channels, stride=2)"
         elif op_name == 'sep_conv_3x3': 
-            return f"SeparableConv2d_BN_ReLU(in_channels, out_channels, kernel_size=3, stride={stride}, padding=1)"
+            return f"SeparableConv2d_BatchNorm_ReLU(channels, kernel_size=3, stride={stride}, padding=1)"
         elif op_name == 'sep_conv_5x5': 
-            return f"SeparableConv2d_BN_ReLU(in_channels, out_channels, kernel_size=5, stride={stride}, padding=2)"
+            return f"SeparableConv2d_BatchNorm_ReLU(channels, kernel_size=5, stride={stride}, padding=2)"
         elif op_name == 'dil_conv_3x3': 
-            return f"DilatedConv2d_BN_ReLU(in_channels, out_channels, kernel_size=3, stride={stride}, padding=2, dilation=2)"
+            return f"DilatedConv2d_BatchNorm_ReLU(channels, kernel_size=3, stride={stride}, padding=2, dilation=2)"
         elif op_name == 'dil_conv_5x5': 
-            return f"DilatedConv2d_BN_ReLU(in_channels, out_channels, kernel_size=5, stride={stride}, padding=4, dilation=2)"
+            return f"DilatedConv2d_BatchNorm_ReLU(channels, kernel_size=5, stride={stride}, padding=4, dilation=2)"
         elif op_name == 'max_pool_3x3': 
             return f"MaxPool2d(kernel_size=3, stride={stride}, padding=1)"
         elif op_name == 'avg_pool_3x3': 
@@ -251,50 +261,40 @@ class NB301Stringifier:
 
     def _get_primitives(self):
         return """
-class ReLUConvBN(nn.Module):
-    def __init__(self, C_in, C_out, kernel_size, stride, padding, affine=True):
-        super().__init__()
-        self.op = nn.Sequential(
-            nn.ReLU(inplace=False),
-            nn.Conv2d(C_in, C_out, kernel_size, stride=stride, padding=padding, bias=False),
-            nn.BatchNorm2d(C_out, affine=affine)
-        )
-    def forward(self, x): return self.op(x)
-
 class DilConv(nn.Module):
-    def __init__(self, C_in, C_out, kernel_size, stride, padding, dilation, affine=True):
+    def __init__(self, channels, kernel_size, stride, padding, dilation, affine=True):
         super().__init__()
         self.op = nn.Sequential(
             nn.ReLU(inplace=False),
-            nn.Conv2d(C_in, C_in, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=C_in, bias=False),
-            nn.Conv2d(C_in, C_out, kernel_size=1, padding=0, bias=False),
-            nn.BatchNorm2d(C_out, affine=affine),
+            nn.Conv2d(channels, channels, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=channels, bias=False),
+            nn.Conv2d(channels, channels, kernel_size=1, padding=0, bias=False),
+            nn.BatchNorm2d(channels, affine=affine),
         )
     def forward(self, x): return self.op(x)
 
 class SepConv(nn.Module):
-    def __init__(self, C_in, C_out, kernel_size, stride, padding, affine=True):
+    def __init__(self, channels, kernel_size, stride, padding, affine=True):
         super().__init__()
         self.op = nn.Sequential(
             nn.ReLU(inplace=False),
-            nn.Conv2d(C_in, C_in, kernel_size=kernel_size, stride=stride, padding=padding, groups=C_in, bias=False),
-            nn.Conv2d(C_in, C_in, kernel_size=1, padding=0, bias=False),
-            nn.BatchNorm2d(C_in, affine=affine),
+            nn.Conv2d(channels, channels, kernel_size=kernel_size, stride=stride, padding=padding, groups=channels, bias=False),
+            nn.Conv2d(channels, channels, kernel_size=1, padding=0, bias=False),
+            nn.BatchNorm2d(channels, affine=affine),
             nn.ReLU(inplace=False),
-            nn.Conv2d(C_in, C_in, kernel_size=kernel_size, stride=1, padding=padding, groups=C_in, bias=False),
-            nn.Conv2d(C_in, C_out, kernel_size=1, padding=0, bias=False),
-            nn.BatchNorm2d(C_out, affine=affine),
+            nn.Conv2d(channels, channels, kernel_size=kernel_size, stride=1, padding=padding, groups=channels, bias=False),
+            nn.Conv2d(channels, channels, kernel_size=1, padding=0, bias=False),
+            nn.BatchNorm2d(channels, affine=affine),
         )
     def forward(self, x): return self.op(x)
 
 class FactorizedReduce(nn.Module):
-    def __init__(self, C_in, C_out, affine=True):
+    def __init__(self, channels, affine=True):
         super().__init__()
-        assert C_out % 2 == 0
+        assert channels % 2 == 0
         self.relu = nn.ReLU(inplace=False)
-        self.conv_1 = nn.Conv2d(C_in, C_out // 2, 1, stride=2, padding=0, bias=False)
-        self.conv_2 = nn.Conv2d(C_in, C_out // 2, 1, stride=2, padding=0, bias=False) 
-        self.bn = nn.BatchNorm2d(C_out, affine=affine)
+        self.conv_1 = nn.Conv2d(channels, channels // 2, 1, stride=2, padding=0, bias=False)
+        self.conv_2 = nn.Conv2d(channels, channels // 2, 1, stride=2, padding=0, bias=False) 
+        self.bn = nn.BatchNorm2d(channels, affine=affine)
     def forward(self, x):
         x = self.relu(x)
         out = torch.cat([self.conv_1(x), self.conv_2(x[:,:,1:,1:])], dim=1)

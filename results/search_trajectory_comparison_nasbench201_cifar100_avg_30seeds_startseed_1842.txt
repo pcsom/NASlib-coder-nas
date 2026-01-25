@@ -1,0 +1,22 @@
+=== Optimal Architecture Performance ===
+Optimal: 73.49%
+
+=== Method Statistics - Best Individual (% Validation Accuracy) ===
+REA (Default): Mean = 73.238%, Std = 0.052%
+Bananas (Default): Mean = 73.146%, Std = 0.212%
+Bananas + LLM (Ours): Mean = 73.232%, Std = 0.054%
+
+=== Method Statistics - Cumulative (% Validation Accuracy) ===
+
+=== Convergence Speed (Iterations to reach 73.12%) ===
+REA (Default): 228 iterations
+Bananas (Default): 440 iterations
+Bananas + LLM (Ours): 228 iterations
+
+=== Average Pairwise Differences (% Validation Accuracy) ===
+Cumulative: Bananas (Default) - REA (Default): +0.029%
+Best individual: Bananas (Default) - REA (Default): -0.092%
+Cumulative: Bananas + LLM (Ours) - REA (Default): +0.237%
+Best individual: Bananas + LLM (Ours) - REA (Default): -0.006%
+Cumulative: Bananas + LLM (Ours) - Bananas (Default): +0.208%
+Best individual: Bananas + LLM (Ours) - Bananas (Default): +0.086%

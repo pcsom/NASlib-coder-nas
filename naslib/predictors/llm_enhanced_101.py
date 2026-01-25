@@ -112,8 +112,8 @@ class NB101Stringifier:
         #     'maxpool3x3': 'nn.MaxPool2d(kernel_size=3, stride=1, padding=1)',
         # }
         self.OP_MAP = {
-            'conv3x3-bn-relu': 'Conv2d_BatchNorm_ReLU(kernel_size=3, stride=1, padding=1)',
-            'conv1x1-bn-relu': 'Conv2d_BatchNorm_ReLU(kernel_size=1, stride=1, padding=0)',
+            'conv3x3-bn-relu': 'Conv2d_BatchNorm_ReLU(out_channels, out_channels, kernel_size=3, stride=1, padding=1)',
+            'conv1x1-bn-relu': 'Conv2d_BatchNorm_ReLU(out_channels, out_channels, kernel_size=1, stride=1, padding=0)',
             'maxpool3x3': 'nn.MaxPool2d(kernel_size=3, stride=1, padding=1)',
         }
 
@@ -165,10 +165,10 @@ class NB101Stringifier:
         
         lines = []
         lines.append("class Cell(nn.Module):")
-        lines.append("    def __init__(self, C_in, C_out, stride):")
+        lines.append("    def __init__(self, in_channels, out_channels, stride):")
         lines.append("        super().__init__()")
         # lines.append("        self.input_projection = nn.Sequential(nn.Conv2d(C_in, 16, kernel_size=1, bias=False), nn.BatchNorm2d(16), nn.ReLU())")
-        lines.append("        self.input_projection = Conv2d_BatchNorm_ReLU(kernel_size=1, stride=1, padding=0)")
+        lines.append("        self.input_projection = Conv2d_BatchNorm_ReLU(in_channels, out_channels, kernel_size=1, stride=1, padding=0)")
         
         for t in range(1, num_vertices - 1):
             op_label = ops[t]

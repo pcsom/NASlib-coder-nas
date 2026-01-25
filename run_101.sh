@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=codenas
 #SBATCH --nodes=1
-#SBATCH -c 20
-#SBATCH --time=16:00:00
-#SBATCH --gres=gpu:h100
-#SBATCH --mem=64G
+#SBATCH -c 10
+#SBATCH --time=2:00:00
+#SBATCH --gres=gpu:1
+#SBATCH --mem=48G
 #SBATCH --output=slurm_logs/znaslib101_%j.out
 export HF_HOME=/storage/ice-shared/vip-vvk/data/AOT/$USER/huggingface
 # Accept arguments with defaults

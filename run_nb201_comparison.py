@@ -137,14 +137,14 @@ config.search.seed = args.seed
 config.seed = args.seed
 config.save_arch_weights = False
 config.search.num_init = 20
-config.search.k = 20
-config.search.epochs = 40*config.search.k + config.search.num_init
-config.search.num_candidates = 200
+config.search.k = 10
+config.search.epochs = 500
+config.search.num_candidates = 100
 config.out_dir = "run_nb201"
 config.debug_predictor = True
 config.search.num_ensemble = 3
-config.search.num_arches_to_mutate = 20
-config.search.max_mutations = 1
+config.search.num_arches_to_mutate = 16
+config.search.max_mutations = 3
 config.search.checkpoint_freq = 10000
 
 RUN_BASELINES = args.run_baselines
@@ -289,9 +289,13 @@ def debug_new_epoch(self, epoch):
             # Calculate Kendall Tau (Ranking Correlation)
             tau, _ = kendalltau(self.test_accuracies, mean_pred_scores)
             
-            # Log the metric
+            # Calculate MSE (Mean Squared Error)
+            mse = np.mean((np.array(self.test_accuracies) - mean_pred_scores) ** 2)
+            
+            # Log the metrics
             self.surrogate_test_metrics.append(tau)
-            print(f"Epoch {epoch}: Surrogate Test Kendall Tau = {tau:.4f}")
+            self.surrogate_test_metrics_mse.append(mse)
+            print(f"Epoch {epoch}: Surrogate Test Kendall Tau = {tau:.4f}, MSE = {mse:.6f}")
 
         # 5. Evaluation
         print(f"[Debug] Evaluating architecture {len(self.next_batch)}...")
@@ -460,8 +464,9 @@ for i in range(NUM_TRIALS):
 
         # Retrieve the stored metrics
         if hasattr(optimizer, 'surrogate_test_metrics') and len(optimizer.surrogate_test_metrics) > 0:
-            metrics = optimizer.surrogate_test_metrics
-            epochs = list(range(len(metrics)))
+            metrics_tau = optimizer.surrogate_test_metrics
+            metrics_mse = optimizer.surrogate_test_metrics_mse if hasattr(optimizer, 'surrogate_test_metrics_mse') else []
+            epochs = list(range(len(metrics_tau)))
 
             # Save metrics to JSON file for later analysis
             # Create a unique experiment identifier
@@ -479,7 +484,8 @@ for i in range(NUM_TRIALS):
                 'seed': config.search.seed,
                 'trial': i,
                 'epochs': epochs,
-                'kendall_tau': metrics,
+                'kendall_tau': metrics_tau,
+                'mse': metrics_mse,
                 'config_str': config.optimizer
             }
             
@@ -488,19 +494,35 @@ for i in range(NUM_TRIALS):
                 json.dump(metrics_data, f, indent=2)
             print(f"Surrogate metrics saved to {metrics_path}")
 
-            # Plot individual trial
-            plt.figure(figsize=(10, 6))
-            plt.plot(epochs, metrics, marker='o', linestyle='-', color='b', label='Kendall Tau')
-            plt.title(f'Surrogate Generalization on Test Set ({config.optimizer})')
-            plt.xlabel('Search Iterations (Model Updates)')
-            plt.ylabel('Kendall Tau')
-            plt.grid(True)
-            plt.legend()
+            # Plot individual trial with dual panels
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
+            
+            # Plot Kendall Tau
+            ax1.plot(epochs, metrics_tau, marker='o', linestyle='-', color='b', label='Kendall Tau')
+            ax1.set_title(f'Surrogate Kendall Tau on Test Set ({config.optimizer})')
+            ax1.set_xlabel('Search Iterations (Model Updates)')
+            ax1.set_ylabel('Kendall Tau')
+            ax1.grid(True)
+            ax1.legend()
+            
+            # Plot MSE (if available)
+            if metrics_mse:
+                ax2.plot(epochs, metrics_mse, marker='s', linestyle='-', color='r', label='MSE')
+                ax2.set_title(f'Surrogate MSE on Test Set ({config.optimizer})')
+                ax2.set_xlabel('Search Iterations (Model Updates)')
+                ax2.set_ylabel('MSE')
+                ax2.grid(True)
+                ax2.legend()
+            else:
+                ax2.text(0.5, 0.5, 'MSE data not available', 
+                        ha='center', va='center', transform=ax2.transAxes)
+            
+            plt.tight_layout()
             
             # Save the plot
-            plot_path = os.path.join(config.save, f"surrogate_test_accuracy_trial_{i}_seed_{config.search.seed}.png")
+            plot_path = os.path.join(config.save, f"surrogate_test_metrics_trial_{i}_seed_{config.search.seed}.png")
             plt.savefig(plot_path)
-            print(f"Surrogate accuracy plot saved to {plot_path}")
+            print(f"Surrogate metrics plot saved to {plot_path}")
             plt.close()
     
             return trainer.optimizer.history
@@ -557,8 +579,8 @@ for i in range(NUM_TRIALS):
                 predictor_cls=LLM_NB201_Predictor,
                 predictor_kwargs={
                     "base_predictor_cls": CustomXGBoost,
-                    "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_embedded.csv',
-                    "embedding_col": 'codellama_python_7b_pytorch_code_embedding',
+                    "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_pytorch_corrected.csv',
+                    "embedding_col": 'codellama_python_7b_pytorch_code_exclude_helper_embedding',
                     "use_pca": False,
                     "pca_components": 128,
                     # Arguments for CustomXGBoost (passed via **kwargs)
@@ -575,8 +597,8 @@ for i in range(NUM_TRIALS):
                 predictor_cls=LLM_NB201_Predictor,
                 predictor_kwargs={
                     "base_predictor_cls": CustomMLP,
-                    "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_embedded.csv',
-                    "embedding_col": 'codellama_python_7b_pytorch_code_embedding',
+                    "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_pytorch_corrected.csv',
+                    "embedding_col": 'codellama_python_7b_pytorch_code_exclude_helper_embedding',
                     "use_pca": True,
                     "pca_components": 128,
                     # --- MLP Specific Hyperparams ---

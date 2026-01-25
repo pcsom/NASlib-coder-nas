@@ -1,4 +1,4 @@
-for i in {1247..1251}
+for i in {1352..1354}
 do
-  sbatch run_101.sh $i false xgboost 10
+  sbatch run_101.sh $i false mlp 3
 done

@@ -3,6 +3,7 @@ import logging
 import torch
 import copy
 import numpy as np
+import random
 from scipy.stats import kendalltau
 
 from naslib.optimizers.core.metaclasses import MetaOptimizer
@@ -56,11 +57,13 @@ class Bananas(MetaOptimizer):
         self.next_batch = []
         self.history = torch.nn.ModuleList()
 
-        self.test_size = 200
+        self.test_size = None  # Will be set in adapt_search_space
         self.test_data = []
         self.test_accuracies = []
         self.test_hashes = set()  # Store hashes of test architectures to avoid sampling them
         self.surrogate_test_metrics = [] # store KT over time
+        self.surrogate_test_metrics_mse = [] # store MSE over time
+        self.test_min_accuracy = -1
 
         self.zc = config.search.zc if hasattr(config.search, 'zc') else None
         self.semi = "semi" in self.predictor_type 
@@ -90,6 +93,39 @@ class Bananas(MetaOptimizer):
         if self.semi:
             self.unlabeled = []
         
+        # Determine test set size and generation strategy based on search space
+        max_test_size = 1000
+        presampled_op_indices = None
+        
+        if self.ss_type == 'nasbench201':
+            # NB201: Use exhaustive enumeration (5^6 = 15625 total architectures)
+            logger.info("NB201 detected: using exhaustive architecture enumeration for test set")
+            
+            # Enumerate all architectures
+            arch_iterator = self.search_space.get_arch_iterator(dataset_api)
+            all_op_indices = []
+            
+            # Filter for validity (same logic as in graph.py)
+            def is_valid_arch(op_indices):
+                op_list = list(op_indices)
+                return not ((op_list[0] == op_list[1] == op_list[2] == 1) or
+                            (op_list[2] == op_list[4] == op_list[5] == 1))
+            
+            for op_indices in arch_iterator:
+                if is_valid_arch(op_indices):
+                    all_op_indices.append(list(op_indices))
+            
+            # Shuffle and take min(space_size, max_test_size)
+            import random as rand
+            rand.shuffle(all_op_indices)
+            self.test_size = min(len(all_op_indices), max_test_size)
+            presampled_op_indices = all_op_indices[:self.test_size]
+            logger.info(f"Enumerated {len(all_op_indices)} valid NB201 architectures, using {self.test_size} for test set")
+        else:
+            # NB101, NB301, etc: Use random sampling with hash-set collision checking
+            self.test_size = max_test_size
+            logger.info(f"Using random sampling with collision detection for test set size {self.test_size}")
+        
         # Create a unique filename for this search space + dataset combo
         cache_filename = f"fixed_test_set_{self.search_space.get_type()}_{self.dataset}.pkl"
 
@@ -97,16 +133,36 @@ class Bananas(MetaOptimizer):
             print(f"Loading fixed test set from cache: {cache_filename}")
             try:
                 with open(cache_filename, 'rb') as f:
-                    arch_op_indices, self.test_accuracies = pickle.load(f)
+                    arch_representations, self.test_accuracies = pickle.load(f)
                 self.test_data = []
                 self.test_hashes = set()
-                for op_indices in arch_op_indices:
+                
+                for arch_repr in arch_representations:
                     arch = self.search_space.clone()
-                    # For hollow architectures, just set op_indices directly
-                    if hasattr(arch, 'instantiate_model') and not arch.instantiate_model:
-                        arch.op_indices = op_indices
+                    
+                    # Handle different architecture representations
+                    if self.ss_type == 'nasbench201':
+                        # NB201: uses op_indices
+                        if hasattr(arch, 'instantiate_model') and not arch.instantiate_model:
+                            arch.op_indices = arch_repr
+                        else:
+                            convert_op_indices_to_naslib(arch_repr, arch)
+                    elif self.ss_type == 'nasbench301':
+                        # NB301: uses compact representation
+                        arch.compact = arch_repr
+                    elif self.ss_type == 'nasbench101':
+                        # NB101: uses spec tuple representation
+                        from naslib.search_spaces.nasbench101.conversions import convert_tuple_to_spec
+                        arch.set_spec(arch_repr)
                     else:
-                        convert_op_indices_to_naslib(op_indices, arch)
+                        # Other spaces: try op_indices first, then compact
+                        if hasattr(arch, 'op_indices'):
+                            arch.op_indices = arch_repr
+                        elif hasattr(arch, 'compact'):
+                            arch.compact = arch_repr
+                        else:
+                            logger.warning(f"Unknown architecture representation for {self.ss_type}")
+                    
                     self.test_data.append(arch)
                     self.test_hashes.add(arch.get_hash())
             except Exception as e:
@@ -122,30 +178,92 @@ class Bananas(MetaOptimizer):
             self.test_accuracies = []
             self.test_hashes = set()
             
-            for _ in range(self.test_size):
-                arch = self.search_space.clone()
-                arch.sample_random_architecture(dataset_api=self.dataset_api)
+            if presampled_op_indices is not None:
+                # NB201: Use presampled architectures from enumeration
+                for op_indices in presampled_op_indices:
+                    arch = self.search_space.clone()
+                    arch.set_op_indices(op_indices)
+                    
+                    # Parse the architecture if needed
+                    if self.search_space.instantiate_model == True:
+                        arch.parse()
+                    
+                    # Query ground truth
+                    acc = arch.query(self.performance_metric, self.dataset, dataset_api=self.dataset_api)
+                    
+                    # Filter out architectures below minimum accuracy threshold
+                    if acc < self.test_min_accuracy:
+                        continue
+                    
+                    print(f"Generated test architecture with {self.performance_metric}: {acc:.4f}") 
+                    self.test_data.append(arch)
+                    self.test_accuracies.append(acc)
+                    self.test_hashes.add(arch.get_hash())
+                    
+                    # Stop if we've reached desired test set size
+                    if len(self.test_data) >= self.test_size:
+                        break
+            else:
+                # Other spaces: Random sampling with hash collision checking
+                attempts = 0
+                max_attempts = self.test_size * 10  # Prevent infinite loops
                 
-                # Parse the architecture if needed (required for query and conversions)
-                if self.search_space.instantiate_model == True:
-                    arch.parse()
+                while len(self.test_data) < self.test_size and attempts < max_attempts:
+                    arch = self.search_space.clone()
+                    arch.sample_random_architecture(dataset_api=self.dataset_api)
+                    
+                    # Parse the architecture if needed
+                    if self.search_space.instantiate_model == True:
+                        arch.parse()
+                    
+                    arch_hash = arch.get_hash()
+                    
+                    # Skip if we've already sampled this architecture
+                    if arch_hash in self.test_hashes:
+                        attempts += 1
+                        continue
+                    
+                    # Query ground truth
+                    acc = arch.query(self.performance_metric, self.dataset, dataset_api=self.dataset_api)
+                    
+                    # Filter out architectures below minimum accuracy threshold
+                    if acc < self.test_min_accuracy:
+                        attempts += 1
+                        continue
+                    
+                    print(f"Generated test architecture {len(self.test_data)+1}/{self.test_size} with {self.performance_metric}: {acc:.4f}") 
+                    self.test_data.append(arch)
+                    self.test_accuracies.append(acc)
+                    self.test_hashes.add(arch_hash)
+                    attempts += 1
                 
-                # Query ground truth
-                acc = arch.query(self.performance_metric, self.dataset, dataset_api=self.dataset_api)
-                print(f"Generated test architecture with {self.performance_metric}: {acc:.4f}") 
-                self.test_data.append(arch)
-                self.test_accuracies.append(acc)
-                self.test_hashes.add(arch.get_hash())
+                if len(self.test_data) < self.test_size:
+                    logger.warning(f"Could only generate {len(self.test_data)} unique architectures out of {self.test_size} requested")
 
             # Save to cache for next time
-            print(f"Saving fixed test set to {cache_filename}")
+            print(f"Saving fixed test set ({len(self.test_data)} architectures) to {cache_filename}")
             with open(cache_filename, 'wb') as f:
-                arch_op_indices = []
+                arch_representations = []
                 for arch in self.test_data:
-                    arch_op_indices.append(arch.get_op_indices())
-                pickle.dump((arch_op_indices, self.test_accuracies), f)
+                    # Get architecture representation based on search space type
+                    if self.ss_type == 'nasbench201':
+                        arch_representations.append(arch.get_op_indices())
+                    elif self.ss_type == 'nasbench301':
+                        arch_representations.append(arch.get_compact())
+                    elif self.ss_type == 'nasbench101':
+                        # NB101: use tuple representation from get_hash()
+                        arch_representations.append(arch.get_hash())
+                    else:
+                        # Fallback: try op_indices first, then compact
+                        if hasattr(arch, 'get_op_indices'):
+                            arch_representations.append(arch.get_op_indices())
+                        elif hasattr(arch, 'get_compact'):
+                            arch_representations.append(arch.get_compact())
+                        else:
+                            logger.warning(f"Cannot extract architecture representation for {self.ss_type}")
+                pickle.dump((arch_representations, self.test_accuracies), f)
         
-        print(f'[Bananas Optimizer] Test set generation complete.')
+        print(f'[Bananas Optimizer] Test set generation complete: {len(self.test_data)} architectures')
 
     def get_zero_cost_predictors(self):
         return {zc_name: ZeroCost(method_type=zc_name) for zc_name in self.zc_names}
@@ -171,6 +289,18 @@ class Bananas(MetaOptimizer):
 
         return zc_scores
 
+    def _remove_from_test_set(self, arch_hash):
+        """Remove architecture from test set if it exists there."""
+        if arch_hash in self.test_hashes:
+            # Find and remove from test_data and test_accuracies
+            for idx, test_arch in enumerate(self.test_data):
+                if test_arch.get_hash() == arch_hash:
+                    logger.info(f"Removing architecture {arch_hash} from test set (entered training population)")
+                    self.test_hashes.remove(arch_hash)
+                    self.test_data.pop(idx)
+                    self.test_accuracies.pop(idx)
+                    break
+
     def _set_scores(self, model):
 
         if self.use_zc_api and str(model.arch_hash) in self.zc_api:
@@ -187,27 +317,12 @@ class Bananas(MetaOptimizer):
         self._update_history(model)
 
     def _sample_new_model(self):
-        max_retries = 500  # Prevent infinite loops
-        retries = 0
+        model = torch.nn.Module()
+        model.arch = self.search_space.clone()
+        model.arch.sample_random_architecture(
+            dataset_api=self.dataset_api, load_labeled=self.load_labeled)
+        model.arch_hash = model.arch.get_hash()
         
-        while retries < max_retries:
-            model = torch.nn.Module()
-            model.arch = self.search_space.clone()
-            model.arch.sample_random_architecture(
-                dataset_api=self.dataset_api, load_labeled=self.load_labeled)
-            model.arch_hash = model.arch.get_hash()
-            
-            # Check if this architecture is in the test set
-            if model.arch_hash not in self.test_hashes:
-                if self.search_space.instantiate_model == True:
-                    model.arch.parse()
-                return model
-            
-            retries += 1
-        
-        # If we've exhausted retries, log a warning and return anyway
-        # This should be extremely rare in large search spaces
-        logger.warning(f"Could not sample architecture outside test set after {max_retries} attempts. Returning anyway.")
         if self.search_space.instantiate_model == True:
             model.arch.parse()
         return model
@@ -271,6 +386,7 @@ class Bananas(MetaOptimizer):
 
         if epoch < self.num_init:
             model = self._sample_new_model()
+            self._remove_from_test_set(model.arch_hash)
             self._set_scores(model)
         else:
             if len(self.next_batch) == 0:
@@ -312,9 +428,13 @@ class Bananas(MetaOptimizer):
                 # Calculate Kendall Tau (Ranking Correlation)
                 tau, _ = kendalltau(self.test_accuracies, pred_scores)
                 
-                # Log the metric
+                # Calculate MSE (Mean Squared Error)
+                mse = np.mean((np.array(self.test_accuracies) - np.array(pred_scores)) ** 2)
+                
+                # Log the metrics
                 self.surrogate_test_metrics.append(tau)
-                logger.info(f"Epoch {epoch}: Surrogate Test Kendall Tau = {tau:.4f}")
+                self.surrogate_test_metrics_mse.append(mse)
+                logger.info(f"Epoch {epoch}: Surrogate Test Kendall Tau = {tau:.4f}, MSE = {mse:.6f}")
                 # -----------------------------------------------
                 # define an acquisition function
                 acq_fn = acquisition_function(
@@ -328,6 +448,7 @@ class Bananas(MetaOptimizer):
 
             # train the next architecture chosen by the neural predictor
             model = self.next_batch.pop()
+            self._remove_from_test_set(model.arch_hash)
             self._set_scores(model)
 
     def _get_best_candidates(self, candidates, acq_fn):
