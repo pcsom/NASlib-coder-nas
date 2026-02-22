@@ -14,6 +14,7 @@ import types
 import copy
 import argparse
 
+
 # --- PARSE CUSTOM ARGUMENTS FIRST (before any NASLib imports) ---
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('--seed', type=int, default=242, help='Random seed for reproducibility')
@@ -129,9 +130,9 @@ class CustomMLP(MLPPredictor):
 
 # --- CONFIGURATION ---
 config = utils.get_config_from_args(config_type="nas")
-config.dataset = "cifar100"
+config.dataset = "cifar10"
 config.search_space = "nasbench201" 
-config.out_dir = "/home/hice1/psomu3/scratch/codenas/NASLib/results_nb201" # New output dir
+config.out_dir = "/home/hice1/mgullapalli6/scratch/codenas/NASLib/results_nb201" # New output dir
 config.optimizer = "" 
 config.search.seed = args.seed
 config.seed = args.seed
@@ -222,16 +223,47 @@ def batch_acquisition_function(ensemble, ytrain, acq_fn_type="its", explore_fact
 
         t1 = time.time()
         print(f"[Batch Acquisition] Processed {len(archs)} candidates in {t1-t0:.4f}s")
+        
         return scores
 
     # 3. Return the batched callable
     return batched_executor
 
 def _get_best_candidates_batch(self, candidates, acq_fn):
-    # Pass full list to acq_fn instead of loop
-    info = [{'zero_cost_scores': c.zc_scores} for c in candidates] if self.zc and len(self.train_data) <= self.max_zerocost else None
-    values = acq_fn([c.arch for c in candidates], info)
-    return [candidates[i] for i in np.argsort(values)[-self.k:]]
+    print(f"candidate count: {len(candidates)}, candidates: {candidates}")
+    info = [{'zero_cost_scores': c.zc_scores} for c in candidates] \
+        if self.zc and len(self.train_data) <= self.max_zerocost else None
+
+    preds = self.ensemble.query([c.arch for c in candidates], info)
+    mean_preds = np.mean(preds, axis=0)
+
+    acq_values = acq_fn([c.arch for c in candidates], info)
+
+    selected_indices = np.argsort(acq_values)[-self.k:]
+    selected = [candidates[i] for i in selected_indices]
+
+    # --- LOG ALL CANDIDATES ---
+    if not hasattr(self, "candidate_log"):
+        self.candidate_log = []
+    def compute_nb201_index(op_indices):
+        index = 0
+        for i, op in enumerate(op_indices):
+            index += int(op) * (5 ** i)
+        return index
+    for i, c in enumerate(candidates):
+
+        arch_index = compute_nb201_index(c.arch.op_indices)
+
+        self.candidate_log.append({
+            "generation": int(self.current_epoch),
+            "arch_index": int(arch_index),
+            "op_indices": list(map(int, c.arch.op_indices)),
+            "predicted_accuracy": float(mean_preds[i]),
+            "acquisition_value": float(acq_values[i]),
+            "selected": bool(i in selected_indices)
+        })
+
+    return selected
 
 acq_funcs.acquisition_function = batch_acquisition_function
 bananas_opt.acquisition_function = batch_acquisition_function
@@ -245,6 +277,7 @@ dataset_api = get_dataset_api(config.search_space, config.dataset)
 def debug_new_epoch(self, epoch):
     import time
     from scipy.stats import kendalltau
+    self.current_epoch = epoch
 
     if epoch < self.num_init:
         model = self._sample_new_model()
@@ -302,6 +335,15 @@ def debug_new_epoch(self, epoch):
         t5 = time.time()
         model = self.next_batch.pop()
         self._set_scores(model)
+        if not hasattr(self, "trajectory"):
+            self.trajectory = []
+
+        self.trajectory.append({
+            "op_indices": getattr(model, "op_indices", None),
+            "generation": epoch,
+            "predicted_accuracy": getattr(model, "predicted_accuracy", None),
+            "true_accuracy": model.accuracy
+        })
         print(f"[Debug] Evaluation finished in {time.time()-t5:.2f}s")
 
 # Apply the patch
@@ -461,7 +503,27 @@ for i in range(NUM_TRIALS):
 
         # Access the optimizer instance from the trainer
         optimizer = trainer.optimizer
-
+        #save trajectory if available
+        if hasattr(optimizer, "trajectory"):
+            trajectory_path = os.path.join(
+                config.save,
+                f"trajectory_trial_{i}_seed_{config.search.seed}.json"
+            )
+            with open(trajectory_path, "w") as f:
+                json.dump(optimizer.trajectory, f, indent=2)
+            print(f"Trajectory saved to {trajectory_path}")
+        else:
+            print("No trajectory found on optimizer.")
+        if hasattr(optimizer, "candidate_log"):
+            candidate_path = os.path.join(
+                config.save,
+                f"candidate_log_trial_{i}_seed_{config.search.seed}.json"
+            )
+            with open(candidate_path, "w") as f:
+                json.dump(optimizer.candidate_log, f, indent=2)
+            print(f"Candidate log saved to {candidate_path}")
+        else:
+            print("No candidate_log found on optimizer.")
         # Retrieve the stored metrics
         if hasattr(optimizer, 'surrogate_test_metrics') and len(optimizer.surrogate_test_metrics) > 0:
             metrics_tau = optimizer.surrogate_test_metrics
@@ -579,7 +641,7 @@ for i in range(NUM_TRIALS):
                 predictor_cls=LLM_NB201_Predictor,
                 predictor_kwargs={
                     "base_predictor_cls": CustomXGBoost,
-                    "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_pytorch_corrected.csv',
+                    "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_pytorch_correctedpyth',
                     "embedding_col": 'codellama_python_7b_pytorch_code_exclude_helper_embedding',
                     "use_pca": False,
                     "pca_components": 128,
