@@ -21,6 +21,7 @@ parser.add_argument('--seed', type=int, default=242, help='Random seed for repro
 parser.add_argument('--run_baselines', action='store_true', help='Run baseline experiments')
 parser.add_argument('--surrogate', type=str, default='mlp', choices=['xgboost', 'mlp'], help='Surrogate model type')
 parser.add_argument('--trials', type=int, default=1, help='Number of trials to run')
+parser.add_argument('--candidate_log', type = bool, default = True, help = "Whether to log candidate information during the search process for later analysis")
 custom_args, remaining = parser.parse_known_args()
 
 # Update sys.argv to only contain args that NASLib's parser understands
@@ -330,22 +331,7 @@ def debug_new_epoch(self, epoch):
             self.surrogate_test_metrics_mse.append(mse)
             print(f"Epoch {epoch}: Surrogate Test Kendall Tau = {tau:.4f}, MSE = {mse:.6f}")
 
-        # 5. Evaluation
-        print(f"[Debug] Evaluating architecture {len(self.next_batch)}...")
-        t5 = time.time()
-        model = self.next_batch.pop()
-        self._set_scores(model)
-        if not hasattr(self, "trajectory"):
-            self.trajectory = []
-
-        self.trajectory.append({
-            "op_indices": getattr(model, "op_indices", None),
-            "generation": epoch,
-            "predicted_accuracy": getattr(model, "predicted_accuracy", None),
-            "true_accuracy": model.accuracy
-        })
-        print(f"[Debug] Evaluation finished in {time.time()-t5:.2f}s")
-
+        
 # Apply the patch
 bananas_opt.Bananas.new_epoch = debug_new_epoch
 print("Monkey-patched Bananas.new_epoch for profiling.")
@@ -443,7 +429,7 @@ for i in range(NUM_TRIALS):
     config.search.seed = args.seed*(i+1)
     config.seed = config.search.seed
 
-    def run_experiment(optimizer_name, predictor_cls=None, predictor_kwargs=None):
+    def run_experiment(optimizer_name, predictor_cls=None, predictor_kwargs=None, candidate_log=False):
         p_name = predictor_cls.__name__ if predictor_cls else "Default"
         print(f"\n\n>>> RUNNING: {optimizer_name} (Predictor: {p_name}) <<<")
         
@@ -514,7 +500,7 @@ for i in range(NUM_TRIALS):
             print(f"Trajectory saved to {trajectory_path}")
         else:
             print("No trajectory found on optimizer.")
-        if hasattr(optimizer, "candidate_log"):
+        if hasattr(optimizer, "candidate_log") and candidate_log:
             candidate_path = os.path.join(
                 config.save,
                 f"candidate_log_trial_{i}_seed_{config.search.seed}.json"
@@ -615,12 +601,14 @@ for i in range(NUM_TRIALS):
                     # Hyperparams from NASLib Paper Table 2
                     # "max_depth": 6,
                     # "learning_rate": 0.3,
-                }
+                },
+                candidate_log=True  # Enable candidate logging for analysis
             )
         elif SURROGATE == "mlp":
             run_experiment(
                 "bananas",
                 predictor_cls=CustomMLP,
+                candidate_log=True,  # Enable candidate logging for analysis
                 predictor_kwargs={
                     "encoding_type": EncodingType.PATH, # Standard graph encoding
                     "ss_type": "nasbench201",
@@ -639,6 +627,7 @@ for i in range(NUM_TRIALS):
             run_experiment(
                 "bananas",
                 predictor_cls=LLM_NB201_Predictor,
+                candidate_log=True,  # Enable candidate logging for analysis
                 predictor_kwargs={
                     "base_predictor_cls": CustomXGBoost,
                     "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_pytorch_correctedpyth',

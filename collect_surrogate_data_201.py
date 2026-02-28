@@ -35,8 +35,11 @@ for data in data_list10:
         generation_firstdiscovery = item['generation']
         generation_lastdiscovery = item['generation']
         if arch_index not in arch_dict_10:
-            arch_dict_10[arch_index] = {"predicted_accuracy": predicted_accuracy, "generation_firstdiscovery": generation_firstdiscovery, "generation_lastdiscovery": generation_lastdiscovery}
+            arch_dict_10[arch_index] = {"predicted_accuracy": predicted_accuracy, "generation_firstdiscovery": generation_firstdiscovery, "generation_lastdiscovery": generation_lastdiscovery, "showed_up": 1, "average_predicted_accuracy": predicted_accuracy, "average_generation": generation_firstdiscovery}
         else:
+            arch_dict_10[arch_index]["showed_up"] += 1
+            arch_dict_10[arch_index]["average_predicted_accuracy"] = (arch_dict_10[arch_index]["average_predicted_accuracy"] * (arch_dict_10[arch_index]["showed_up"] - 1) + predicted_accuracy) / arch_dict_10[arch_index]["showed_up"]
+            arch_dict_10[arch_index]["average_generation"] = (arch_dict_10[arch_index]["average_generation"] * (arch_dict_10[arch_index]["showed_up"] - 1) + generation_firstdiscovery) / arch_dict_10[arch_index]["showed_up"]
             if generation_firstdiscovery < arch_dict_10[arch_index]["generation_firstdiscovery"]:
                 arch_dict_10[arch_index]["generation_firstdiscovery"] = generation_firstdiscovery
             if generation_lastdiscovery > arch_dict_10[arch_index]["generation_lastdiscovery"]:
@@ -52,8 +55,11 @@ for data in data_list100:
         generation_firstdiscovery = item['generation']
         generation_lastdiscovery = item['generation']
         if arch_index not in arch_dict_100:
-            arch_dict_100[arch_index] = {"predicted_accuracy": predicted_accuracy, "generation_firstdiscovery": generation_firstdiscovery, "generation_lastdiscovery": generation_lastdiscovery}
+            arch_dict_100[arch_index] = {"predicted_accuracy": predicted_accuracy, "generation_firstdiscovery": generation_firstdiscovery, "generation_lastdiscovery": generation_lastdiscovery, "showed_up": 1, "average_predicted_accuracy": predicted_accuracy, "average_generation": generation_firstdiscovery}
         else:
+            arch_dict_100[arch_index]["showed_up"] += 1
+            arch_dict_100[arch_index]["average_predicted_accuracy"] = (arch_dict_100[arch_index]["average_predicted_accuracy"] * (arch_dict_100[arch_index]["showed_up"] - 1) + predicted_accuracy) / arch_dict_100[arch_index]["showed_up"]
+            arch_dict_100[arch_index]["average_generation"] = (arch_dict_100[arch_index]["average_generation"] * (arch_dict_100[arch_index]["showed_up"] - 1) + generation_firstdiscovery) / arch_dict_100[arch_index]["showed_up"]
             if generation_firstdiscovery < arch_dict_100[arch_index]["generation_firstdiscovery"]:
                 arch_dict_100[arch_index]["generation_firstdiscovery"] = generation_firstdiscovery
             if generation_lastdiscovery > arch_dict_100[arch_index]["generation_lastdiscovery"]:
@@ -71,7 +77,13 @@ for arch_index in arch_dict_10:
             "generation_lastdiscovery_cifar10": arch_dict_10[arch_index]["generation_lastdiscovery"],
             "predicted_accuracy_cifar100": arch_dict_100[arch_index]["predicted_accuracy"],
             "generation_firstdiscovery_cifar100": arch_dict_100[arch_index]["generation_firstdiscovery"],
-            "generation_lastdiscovery_cifar100": arch_dict_100[arch_index]["generation_lastdiscovery"]
+            "generation_lastdiscovery_cifar100": arch_dict_100[arch_index]["generation_lastdiscovery"],
+            "average_predicted_accuracy_cifar10": arch_dict_10[arch_index]["average_predicted_accuracy"],
+            "average_generation_cifar10": arch_dict_10[arch_index]["average_generation"],
+            "average_predicted_accuracy_cifar100": arch_dict_100[arch_index]["average_predicted_accuracy"],
+            "average_generation_cifar100": arch_dict_100[arch_index]["average_generation"],
+            "showed_up_cifar10": arch_dict_10[arch_index]["showed_up"],
+            "showed_up_cifar100": arch_dict_100[arch_index]["showed_up"]
         })
 df_combined = pd.DataFrame(data_combined)
 
@@ -90,7 +102,13 @@ df_unified['generation_firstdiscovery_cifar10'] = df_unified['generation_firstdi
 df_unified['generation_lastdiscovery_cifar10'] = df_unified['generation_lastdiscovery_cifar10'].fillna(600)
 df_unified['predicted_accuracy_cifar100'] = df_unified['predicted_accuracy_cifar100'].fillna(0)
 df_unified['generation_firstdiscovery_cifar100'] = df_unified['generation_firstdiscovery_cifar100'].fillna(600)
-df_unified['generation_lastdiscovery_cifar100'] = df_unified['generation_lastdiscovery_cifar100'].fillna(600)   
+df_unified['generation_lastdiscovery_cifar100'] = df_unified['generation_lastdiscovery_cifar100'].fillna(600) 
+df_unified['average_predicted_accuracy_cifar10'] = df_unified['average_predicted_accuracy_cifar10'].fillna(0)
+df_unified['average_generation_cifar10'] = df_unified['average_generation_cifar10'].fillna(600)
+df_unified['average_predicted_accuracy_cifar100'] = df_unified['average_predicted_accuracy_cifar100'].fillna(0)
+df_unified['average_generation_cifar100'] = df_unified['average_generation_cifar100'].fillna(600)
+df_unified['showed_up_cifar10'] = df_unified['showed_up_cifar10'].fillna(0)
+df_unified['showed_up_cifar100'] = df_unified['showed_up_cifar100'].fillna(0)
 print(df_unified.head())
 
 df_unified.to_csv('/storage/ice-shared/vip-vvk/data/AOT/mgullapalli6/codenas/collecteddata_unified.csv', index=False)
