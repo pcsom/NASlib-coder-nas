@@ -1,4 +1,4 @@
-data: /storage/ice1/3/5/abb32/NASlib-coder-nas/naslib/data
+data: /storage/ice1/2/5/mgullapalli6/NASlib-coder-nas/naslib/data
 dataset: cifar10
 debug_predictor: True
 eval_only: False
@@ -46,17 +46,17 @@ search:
   debug_predictor: False
   drop_path_prob: 0.0
   encoding_type: path
-  epochs: 420
+  epochs: 500
   fidelity: 200
   gpu: None
   grad_clip: 5
   k: 10
   learning_rate: 0.025
   learning_rate_min: 0.001
-  max_mutations: 1
+  max_mutations: 3
   momentum: 0.9
-  num_arches_to_mutate: 5
-  num_candidates: 200
+  num_arches_to_mutate: 16
+  num_candidates: 100
   num_ensemble: 3
   num_init: 20
   output_weights: True

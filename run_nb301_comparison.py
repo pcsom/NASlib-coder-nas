@@ -131,7 +131,7 @@ class CustomMLP(MLPPredictor):
 config = utils.get_config_from_args(config_type="nas")
 config.dataset = "cifar10"
 config.search_space = "nasbench301" 
-config.out_dir = "/home/hice1/psomu3/scratch/codenas/NASLib/results_nb301" # New output dir
+config.out_dir = "/home/hice1/mg/scratch/codenas/NASLib/results_nb301" # New output dir
 config.optimizer = "" 
 config.search.seed = args.seed
 config.seed = args.seed
