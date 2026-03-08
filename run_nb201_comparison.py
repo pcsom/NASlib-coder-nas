@@ -21,7 +21,7 @@ parser.add_argument('--seed', type=int, default=242, help='Random seed for repro
 parser.add_argument('--run_baselines', action='store_true', help='Run baseline experiments')
 parser.add_argument('--surrogate', type=str, default='mlp', choices=['xgboost', 'mlp'], help='Surrogate model type')
 parser.add_argument('--trials', type=int, default=1, help='Number of trials to run')
-parser.add_argument('--candidate_log', type = bool, default = True, help = "Whether to log candidate information during the search process for later analysis")
+parser.add_argument('--debug', action='store_true', help='stores trajectory_log and candudate_Log', default=False)
 custom_args, remaining = parser.parse_known_args()
 
 # Update sys.argv to only contain args that NASLib's parser understands
@@ -131,7 +131,7 @@ class CustomMLP(MLPPredictor):
 
 # --- CONFIGURATION ---
 config = utils.get_config_from_args(config_type="nas")
-config.dataset = "cifar10"
+config.dataset = "cifar100"
 config.search_space = "nasbench201" 
 config.out_dir = "/home/hice1/mgullapalli6/scratch/codenas/NASLib/results_nb201" # New output dir
 config.optimizer = "" 
@@ -140,9 +140,9 @@ config.seed = args.seed
 config.save_arch_weights = False
 config.search.num_init = 20
 config.search.k = 10
-config.search.epochs = 500
+config.search.epochs = 800
 config.search.num_candidates = 100
-config.out_dir = "run_nb201"
+config.out_dir = "run_nb201/run_nb201"
 config.debug_predictor = True
 config.search.num_ensemble = 3
 config.search.num_arches_to_mutate = 16
@@ -153,6 +153,7 @@ RUN_BASELINES = args.run_baselines
 RUN_ALL = True
 SURROGATE = args.surrogate  # Options: 'xgboost' or 'mlp'
 NUM_TRIALS = args.trials
+DEBUG = args.debug
 
 print("RUN_BASELINES:", RUN_BASELINES)
 print("SURROGATE:", SURROGATE)
@@ -231,6 +232,7 @@ def batch_acquisition_function(ensemble, ytrain, acq_fn_type="its", explore_fact
     return batched_executor
 
 def _get_best_candidates_batch(self, candidates, acq_fn):
+    from naslib.search_spaces.core.query_metrics import Metric
     print(f"candidate count: {len(candidates)}, candidates: {candidates}")
     info = [{'zero_cost_scores': c.zc_scores} for c in candidates] \
         if self.zc and len(self.train_data) <= self.max_zerocost else None
@@ -244,7 +246,7 @@ def _get_best_candidates_batch(self, candidates, acq_fn):
     selected = [candidates[i] for i in selected_indices]
 
     # --- LOG ALL CANDIDATES ---
-    if not hasattr(self, "candidate_log"):
+    if not hasattr(self, "candidate_log" ):
         self.candidate_log = []
     def compute_nb201_index(op_indices):
         index = 0
@@ -254,14 +256,19 @@ def _get_best_candidates_batch(self, candidates, acq_fn):
     for i, c in enumerate(candidates):
 
         arch_index = compute_nb201_index(c.arch.op_indices)
-
+        true_accuracy = c.arch.query(
+            metric=Metric.VAL_ACCURACY,
+            dataset=config.dataset,
+            dataset_api=self.dataset_api
+        )
         self.candidate_log.append({
             "generation": int(self.current_epoch),
             "arch_index": int(arch_index),
             "op_indices": list(map(int, c.arch.op_indices)),
             "predicted_accuracy": float(mean_preds[i]),
             "acquisition_value": float(acq_values[i]),
-            "selected": bool(i in selected_indices)
+            "selected": bool(i in selected_indices),
+            "true_accuracy": float(true_accuracy) if true_accuracy is not None else None
         })
 
     return selected
@@ -331,7 +338,22 @@ def debug_new_epoch(self, epoch):
             self.surrogate_test_metrics_mse.append(mse)
             print(f"Epoch {epoch}: Surrogate Test Kendall Tau = {tau:.4f}, MSE = {mse:.6f}")
 
-        
+        # 5. Evaluation
+        print(f"[Debug] Evaluating architecture {len(self.next_batch)}...")
+        t5 = time.time()
+        model = self.next_batch.pop()
+        self._set_scores(model)
+        if not hasattr(self, "trajectory"):
+            self.trajectory = []
+
+        self.trajectory.append({
+            "op_indices": getattr(model, "op_indices", None),
+            "generation": epoch,
+            "predicted_accuracy": getattr(model, "predicted_accuracy", None),
+            "true_accuracy": model.accuracy
+        })
+        print(f"[Debug] Evaluation finished in {time.time()-t5:.2f}s")
+
 # Apply the patch
 bananas_opt.Bananas.new_epoch = debug_new_epoch
 print("Monkey-patched Bananas.new_epoch for profiling.")
@@ -428,8 +450,8 @@ for i in range(NUM_TRIALS):
     print(f"\n\n=== TRIAL {i+1}/{NUM_TRIALS} ===")
     config.search.seed = args.seed*(i+1)
     config.seed = config.search.seed
-
-    def run_experiment(optimizer_name, predictor_cls=None, predictor_kwargs=None, candidate_log=False):
+    
+    def run_experiment(optimizer_name, predictor_cls=None, predictor_kwargs=None):
         p_name = predictor_cls.__name__ if predictor_cls else "Default"
         print(f"\n\n>>> RUNNING: {optimizer_name} (Predictor: {p_name}) <<<")
         
@@ -490,7 +512,7 @@ for i in range(NUM_TRIALS):
         # Access the optimizer instance from the trainer
         optimizer = trainer.optimizer
         #save trajectory if available
-        if hasattr(optimizer, "trajectory"):
+        if hasattr(optimizer, "trajectory") and DEBUG:
             trajectory_path = os.path.join(
                 config.save,
                 f"trajectory_trial_{i}_seed_{config.search.seed}.json"
@@ -500,7 +522,7 @@ for i in range(NUM_TRIALS):
             print(f"Trajectory saved to {trajectory_path}")
         else:
             print("No trajectory found on optimizer.")
-        if hasattr(optimizer, "candidate_log") and candidate_log:
+        if hasattr(optimizer, "candidate_log") and DEBUG:
             candidate_path = os.path.join(
                 config.save,
                 f"candidate_log_trial_{i}_seed_{config.search.seed}.json"
@@ -601,14 +623,12 @@ for i in range(NUM_TRIALS):
                     # Hyperparams from NASLib Paper Table 2
                     # "max_depth": 6,
                     # "learning_rate": 0.3,
-                },
-                candidate_log=True  # Enable candidate logging for analysis
+                }
             )
         elif SURROGATE == "mlp":
             run_experiment(
                 "bananas",
                 predictor_cls=CustomMLP,
-                candidate_log=True,  # Enable candidate logging for analysis
                 predictor_kwargs={
                     "encoding_type": EncodingType.PATH, # Standard graph encoding
                     "ss_type": "nasbench201",
@@ -627,10 +647,9 @@ for i in range(NUM_TRIALS):
             run_experiment(
                 "bananas",
                 predictor_cls=LLM_NB201_Predictor,
-                candidate_log=True,  # Enable candidate logging for analysis
                 predictor_kwargs={
                     "base_predictor_cls": CustomXGBoost,
-                    "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_pytorch_correctedpyth',
+                    "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_pytorch_corrected.csv',
                     "embedding_col": 'codellama_python_7b_pytorch_code_exclude_helper_embedding',
                     "use_pca": False,
                     "pca_components": 128,
