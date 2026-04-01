@@ -1,3 +1,5 @@
+import glob
+import pandas as pd
 import os
 
 os.environ["OMP_NUM_THREADS"] = "4" 
@@ -14,14 +16,14 @@ import types
 import copy
 import argparse
 
-
+from trajectory_plots import surrogate_data_plots
 # --- PARSE CUSTOM ARGUMENTS FIRST (before any NASLib imports) ---
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('--seed', type=int, default=242, help='Random seed for reproducibility')
 parser.add_argument('--run_baselines', action='store_true', help='Run baseline experiments')
 parser.add_argument('--surrogate', type=str, default='mlp', choices=['xgboost', 'mlp'], help='Surrogate model type')
 parser.add_argument('--trials', type=int, default=1, help='Number of trials to run')
-parser.add_argument('--debug', action='store_true', help='stores trajectory_log and candudate_Log', default=False)
+parser.add_argument('--debug', action='store_true', help='stores trajectory_log and candudate_Log', default=True)
 custom_args, remaining = parser.parse_known_args()
 
 # Update sys.argv to only contain args that NASLib's parser understands
@@ -46,6 +48,7 @@ from naslib.optimizers.discrete.bananas import optimizer as bananas_opt
 from naslib.optimizers.discrete.bananas import acquisition_functions as acq_funcs
 
 import matplotlib.pyplot as plt
+import seaborn as sns
 import json
 
 # Store custom args for use later in the script
@@ -138,7 +141,7 @@ config.optimizer = ""
 config.search.seed = args.seed
 config.seed = args.seed
 config.save_arch_weights = False
-config.search.num_init = 20
+config.search.num_init = 50
 config.search.k = 10
 config.search.epochs = 800
 config.search.num_candidates = 100
@@ -527,8 +530,10 @@ for i in range(NUM_TRIALS):
                 config.save,
                 f"candidate_log_trial_{i}_seed_{config.search.seed}.json"
             )
+            
             with open(candidate_path, "w") as f:
                 json.dump(optimizer.candidate_log, f, indent=2)
+            surrogate_data_plots(config.save)
             print(f"Candidate log saved to {candidate_path}")
         else:
             print("No candidate_log found on optimizer.")
