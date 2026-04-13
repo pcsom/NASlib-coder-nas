@@ -69,3 +69,19 @@ def surrogate_data_plots(res_dir, sel = False):
         plt.legend()
         plt.savefig(os.path.join(res_dir, f'surrogate_true_accuracy_by_gen_{str(sel)}.png'))
         plt.close()
+
+        #plot variance of accuracy error across generations (x-axis is generation, y-axis is variance of accuracy error) and save it as res_dir/surrogate_accuracy_error_variance_by_gen.png
+        df['accuracy_error'] = np.abs(df['predicted_accuracy'] - df['true_accuracy'])/df['true_accuracy']
+        accuracy_error_variance = df.groupby('epoch')['accuracy_error'].var().reset_index()
+        plt.figure(figsize=(10, 6))
+        sns.lineplot(x='epoch', y='accuracy_error', data=accuracy_error_variance)
+        plt.xlabel('Generation')
+        plt.ylabel('Variance of Relative Accuracy Error')
+        plt.title('Variance of Surrogate Accuracy Error Across Generations')
+        plt.grid(True)
+        #draw line of best fit and also write the equation in legend
+        slope, intercept = np.polyfit(accuracy_error_variance['epoch'], accuracy_error_variance['accuracy_error'], 1)
+        plt.plot(accuracy_error_variance['epoch'], slope * accuracy_error_variance['epoch'] + intercept, color='red', label=f'Best Fit Line: y={slope:.6f}x + {intercept:.6f}')
+        plt.legend()
+        plt.savefig(os.path.join(res_dir, f'surrogate_accuracy_error_variance_by_gen_{str(sel)}.png'))
+        plt.close()
