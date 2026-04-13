@@ -8,9 +8,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 
-def surrogate_data_plots(res_dir):
+def surrogate_data_plots(res_dir, sel = False):
     #load res_dir/candiate_log_trail_0_seed_*.json where * can be anything you  want t
     files = glob.glob(os.path.join(res_dir, 'candidate_log_trial_0_seed_*.json'))
+    print(res_dir, files)
     data = []
     for file in files:
         with open(file, 'r') as f:
@@ -20,23 +21,27 @@ def surrogate_data_plots(res_dir):
                 data.append({
                     'epoch': entry['generation'],
                     'true_accuracy': entry['true_accuracy'],
-                    'predicted_accuracy': entry['predicted_accuracy']
+                    'predicted_accuracy': entry['predicted_accuracy'],
+                    'selected': entry['selected']
                 })
+        #filter by selected
+
+        data = [d for d in data if str(d.get('selected')).lower() == "true" or not sel]
         #create a plot of predicted vs true accuracy across generations (x-axis is generation, y-axis is accuracy error) and save it as res_dir/surrogate_accuracy_by_gen.png
         df = pd.DataFrame(data)
-        df['accuracy_error'] = np.abs(df['predicted_accuracy'] - df['true_accuracy'])
+        df['accuracy_error'] = np.abs(df['predicted_accuracy'] - df['true_accuracy'])/df['true_accuracy']
         plt.figure(figsize=(10, 6))
         sns.lineplot(x='epoch', y='accuracy_error', data=df)
         plt.xlabel('Generation')
-        plt.ylabel('Absolute Accuracy Error')
-        plt.title('Surrogate Accuracy Error Across Generations')
+        plt.ylabel('Relative Accuracy Error')
+        plt.title('Surrogate Accuracy Error Across Generations (Absolute Value of (Predicted - True) / True)')
         plt.grid(True)
         #draw line of best fit and also write the equation in legend
         slope, intercept = np.polyfit(df['epoch'], df['accuracy_error'], 1)
         plt.plot(df['epoch'], slope * df['epoch'] + intercept, color='red', label=f'Best Fit Line: y={slope:.6f}x + {intercept:.6f}')
         plt.legend()
 
-        plt.savefig(os.path.join(res_dir, 'surrogate_accuracy_by_gen.png'))
+        plt.savefig(os.path.join(res_dir, f'surrogate_accuracy_by_gen_{str(sel)}.png'))
         plt.close()
         #create 2 plots of preductaed and true accuracy across generations (x-axis is generation, y-axis is accuracy) and save it as res_dir/surrogate_pred_true_by_gen.png
         plt.figure(figsize=(10, 6))
@@ -49,7 +54,7 @@ def surrogate_data_plots(res_dir):
         slope, intercept = np.polyfit(df['epoch'], df['predicted_accuracy'], 1)
         plt.plot(df['epoch'], slope * df['epoch'] + intercept, color='red', label=f'Best Fit Line: y={slope:.6f}x + {intercept:.6f}')
         plt.legend()
-        plt.savefig(os.path.join(res_dir, 'surrogate_predict_accuracy_by_gen.png'))
+        plt.savefig(os.path.join(res_dir, f'surrogate_predict_accuracy_by_gen_{str(sel)}.png'))
         plt.close()
 
         plt.figure(figsize=(10, 6))
@@ -62,5 +67,5 @@ def surrogate_data_plots(res_dir):
         slope, intercept = np.polyfit(df['epoch'], df['true_accuracy'], 1)
         plt.plot(df['epoch'], slope * df['epoch'] + intercept, color='red', label=f'Best Fit Line: y={slope:.6f}x + {intercept:.6f}')
         plt.legend()
-        plt.savefig(os.path.join(res_dir, 'surrogate_true_accuracy_by_gen.png'))
+        plt.savefig(os.path.join(res_dir, f'surrogate_true_accuracy_by_gen_{str(sel)}.png'))
         plt.close()

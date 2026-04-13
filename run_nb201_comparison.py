@@ -533,7 +533,8 @@ for i in range(NUM_TRIALS):
             
             with open(candidate_path, "w") as f:
                 json.dump(optimizer.candidate_log, f, indent=2)
-            surrogate_data_plots(config.save)
+            surrogate_data_plots(config.save, sel = False)
+            surrogate_data_plots(config.save, sel = True)
             print(f"Candidate log saved to {candidate_path}")
         else:
             print("No candidate_log found on optimizer.")
@@ -668,20 +669,5 @@ for i in range(NUM_TRIALS):
             )
         elif SURROGATE == "mlp":
             run_experiment(
-                "bananas",
-                predictor_cls=LLM_NB201_Predictor,
-                predictor_kwargs={
-                    "base_predictor_cls": CustomMLP,
-                    "corpus_path": '/storage/ice-shared/vip-vvk/data/AOT/psomu3/codenas/nasbench201_corpus_pytorch_corrected.csv',
-                    "embedding_col": 'codellama_python_7b_pytorch_code_exclude_helper_embedding',
-                    "use_pca": True,
-                    "pca_components": 128,
-                    # --- MLP Specific Hyperparams ---
-                    "num_layers": 3,
-                    "layer_width": 128,
-                    "batch_size": 32,
-                    "lr": 0.001,
-                    "epochs": 200, 
-                    "loss": "mse"  # or 'mse'
-                }
+                "bananas"
             )
